@@ -1,0 +1,527 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id                       String                    @id @default(cuid())
+  name                     String
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  address                  String?
+  city                     String?
+  state                    String?
+  zip                      String?
+  country                  String?
+  phoneNumber              String?
+  email                    String?
+  website                  String?
+  taxIdentifier            String?
+  fiscalYearStart          DateTime?
+  defaultCurrency          String                    @default("USD")
+  accounts                 Account[]
+  bankConnections          BankConnection[]
+  contacts                 Contact[]
+  expenses                 Expense[]
+  financialInsights        FinancialInsight[]
+  invoices                 Invoice[]
+  payments                 Payment[]
+  products                 Product[]
+  quickbooksConnection     QuickbooksConnection?
+  reconciliationStatements ReconciliationStatement[]
+  taxCategories            TaxCategory[]
+  transactions             Transaction[]
+  users                    User[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String       @id @default(cuid())
+  email          String       @unique
+  name           String?
+  password       String
+  role           UserRole     @default(USER)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  lastLogin      DateTime?
+  isActive       Boolean      @default(true)
+  organizationId String
+  metadata       String?
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@map("users")
+}
+
+model Account {
+  id                       String                     @id @default(cuid())
+  name                     String
+  code                     String
+  type                     AccountType
+  subtype                  String?
+  description              String?
+  isActive                 Boolean                    @default(true)
+  balance                  Float                      @default(0)
+  createdAt                DateTime                   @default(now())
+  updatedAt                DateTime                   @updatedAt
+  parentId                 String?
+  organizationId           String
+  organization             Organization               @relation(fields: [organizationId], references: [id])
+  parent                   Account?                   @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children                 Account[]                  @relation("AccountHierarchy")
+  creditEntries            LedgerEntry[]              @relation("CreditAccount")
+  debitEntries             LedgerEntry[]              @relation("DebitAccount")
+  quickbooksMappings       QuickbooksAccountMapping[]
+  reconciliationStatements ReconciliationStatement[]
+
+  @@unique([organizationId, code])
+  @@map("accounts")
+}
+
+model Transaction {
+  id                          String                         @id @default(cuid())
+  date                        DateTime
+  description                 String
+  reference                   String?
+  status                      TransactionStatus              @default(PENDING)
+  createdAt                   DateTime                       @default(now())
+  updatedAt                   DateTime                       @updatedAt
+  invoiceId                   String?
+  expenseId                   String?
+  bankTransactionId           String?
+  organizationId              String
+  ledgerEntries               LedgerEntry[]
+  quickbooksMappings          QuickbooksTransactionMapping[]
+  matchedStatementTransaction StatementTransaction?          @relation("MatchedTransaction")
+  expense                     Expense?                       @relation(fields: [expenseId], references: [id])
+  invoice                     Invoice?                       @relation(fields: [invoiceId], references: [id])
+  organization                Organization                   @relation(fields: [organizationId], references: [id])
+
+  @@map("transactions")
+}
+
+model LedgerEntry {
+  id              String      @id @default(cuid())
+  amount          Float
+  memo            String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  transactionId   String
+  debitAccountId  String?
+  creditAccountId String?
+  creditAccount   Account?    @relation("CreditAccount", fields: [creditAccountId], references: [id])
+  debitAccount    Account?    @relation("DebitAccount", fields: [debitAccountId], references: [id])
+  transaction     Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@map("ledger_entries")
+}
+
+model Contact {
+  id                 String                     @id @default(cuid())
+  name               String
+  type               ContactType
+  email              String?
+  phone              String?
+  address            String?
+  city               String?
+  state              String?
+  zip                String?
+  country            String?
+  taxIdentifier      String?
+  notes              String?
+  isActive           Boolean                    @default(true)
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  organizationId     String
+  stripeCustomerId   String?
+  organization       Organization               @relation(fields: [organizationId], references: [id])
+  expenses           Expense[]
+  invoices           Invoice[]
+  quickbooksMappings QuickbooksContactMapping[]
+
+  @@map("contacts")
+}
+
+model Invoice {
+  id                 String                     @id @default(cuid())
+  number             String
+  date               DateTime
+  dueDate            DateTime
+  status             InvoiceStatus              @default(DRAFT)
+  subtotal           Float
+  taxAmount          Float                      @default(0)
+  total              Float
+  notes              String?
+  terms              String?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  contactId          String
+  organizationId     String
+  lineItems          InvoiceLineItem[]
+  contact            Contact                    @relation(fields: [contactId], references: [id])
+  organization       Organization               @relation(fields: [organizationId], references: [id])
+  payments           Payment[]
+  quickbooksMappings QuickbooksInvoiceMapping[]
+  transactions       Transaction[]
+
+  @@unique([organizationId, number])
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id            String       @id @default(cuid())
+  description   String
+  quantity      Float
+  unitPrice     Float
+  amount        Float
+  taxRate       Float        @default(0)
+  invoiceId     String
+  productId     String?
+  taxCategoryId String?
+  invoice       Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product       Product?     @relation(fields: [productId], references: [id])
+  taxCategory   TaxCategory? @relation(fields: [taxCategoryId], references: [id])
+
+  @@map("invoice_line_items")
+}
+
+model Payment {
+  id               String        @id @default(cuid())
+  date             DateTime
+  amount           Float
+  method           PaymentMethod
+  reference        String?
+  notes            String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  invoiceId        String?
+  expenseId        String?
+  processingFee    Float         @default(0)
+  status           PaymentStatus @default(PENDING)
+  metadata         String?
+  organizationId   String
+  stripeCustomerId String?
+  expense          Expense?      @relation(fields: [expenseId], references: [id])
+  invoice          Invoice?      @relation(fields: [invoiceId], references: [id])
+  organization     Organization  @relation(fields: [organizationId], references: [id])
+
+  @@map("payments")
+}
+
+model Expense {
+  id             String        @id @default(cuid())
+  date           DateTime
+  description    String
+  amount         Float
+  reference      String?
+  status         ExpenseStatus @default(PENDING)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  contactId      String?
+  accountId      String?
+  receiptUrl     String?
+  organizationId String
+  category       String?
+  contact        Contact?      @relation(fields: [contactId], references: [id])
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  payments       Payment[]
+  transactions   Transaction[]
+
+  @@map("expenses")
+}
+
+model Product {
+  id             String            @id @default(cuid())
+  name           String
+  description    String?
+  type           ProductType
+  sku            String?
+  price          Float
+  cost           Float?
+  taxable        Boolean           @default(true)
+  isActive       Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  quantityOnHand Float?
+  reorderPoint   Float?
+  organizationId String
+  invoiceItems   InvoiceLineItem[]
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+
+  @@map("products")
+}
+
+model TaxCategory {
+  id             String            @id @default(cuid())
+  name           String
+  description    String?
+  rate           Float             @default(0)
+  isActive       Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  organizationId String
+  invoiceItems   InvoiceLineItem[]
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+
+  @@map("tax_categories")
+}
+
+model BankConnection {
+  id              String          @id @default(cuid())
+  institutionName String
+  accountName     String
+  accountNumber   String
+  accountType     BankAccountType
+  balance         Float
+  lastSync        DateTime?
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  externalId      String?
+  accessToken     String?
+  refreshToken    String?
+  organizationId  String
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+
+  @@map("bank_connections")
+}
+
+model ReconciliationStatement {
+  id                String                 @id @default(cuid())
+  statementDate     DateTime
+  endingBalance     Float
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  accountId         String
+  organizationId    String
+  name              String
+  status            String                 @default("IN_PROGRESS")
+  reconciledBalance Float?
+  account           Account                @relation(fields: [accountId], references: [id])
+  organization      Organization           @relation(fields: [organizationId], references: [id])
+  transactions      StatementTransaction[]
+
+  @@map("reconciliation_statements")
+}
+
+model StatementTransaction {
+  id                   String                  @id @default(cuid())
+  date                 DateTime
+  description          String
+  amount               Float
+  reference            String?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  statementId          String
+  isReconciled         Boolean                 @default(false)
+  matchedTransactionId String?                 @unique
+  type                 String
+  matchedTransaction   Transaction?            @relation("MatchedTransaction", fields: [matchedTransactionId], references: [id])
+  statement            ReconciliationStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+
+  @@map("statement_transactions")
+}
+
+model QuickbooksConnection {
+  id                  String                         @id @default(cuid())
+  realmId             String
+  accessToken         String
+  refreshToken        String
+  tokenExpiresAt      DateTime
+  lastSyncedAt        DateTime?
+  isActive            Boolean                        @default(true)
+  createdAt           DateTime                       @default(now())
+  updatedAt           DateTime                       @updatedAt
+  organizationId      String                         @unique
+  syncFrequency       SyncFrequency                  @default(DAILY)
+  syncSettings        Json?
+  accountMappings     QuickbooksAccountMapping[]
+  organization        Organization                   @relation(fields: [organizationId], references: [id])
+  contactMappings     QuickbooksContactMapping[]
+  invoiceMappings     QuickbooksInvoiceMapping[]
+  transactionMappings QuickbooksTransactionMapping[]
+  syncLogs            SyncLog[]
+
+  @@map("quickbooks_connections")
+}
+
+model QuickbooksAccountMapping {
+  id             String               @id @default(cuid())
+  quickbooksId   String
+  localAccountId String
+  connectionId   String
+  connection     QuickbooksConnection @relation(fields: [connectionId], references: [id])
+  account        Account              @relation(fields: [localAccountId], references: [id])
+
+  @@unique([connectionId, quickbooksId])
+  @@map("quickbooks_account_mappings")
+}
+
+model QuickbooksContactMapping {
+  id             String               @id @default(cuid())
+  quickbooksId   String
+  localContactId String
+  connectionId   String
+  connection     QuickbooksConnection @relation(fields: [connectionId], references: [id])
+  contact        Contact              @relation(fields: [localContactId], references: [id])
+
+  @@unique([connectionId, quickbooksId])
+  @@map("quickbooks_contact_mappings")
+}
+
+model QuickbooksInvoiceMapping {
+  id             String               @id @default(cuid())
+  quickbooksId   String
+  localInvoiceId String
+  connectionId   String
+  connection     QuickbooksConnection @relation(fields: [connectionId], references: [id])
+  invoice        Invoice              @relation(fields: [localInvoiceId], references: [id])
+
+  @@unique([connectionId, quickbooksId])
+  @@map("quickbooks_invoice_mappings")
+}
+
+model QuickbooksTransactionMapping {
+  id                 String               @id @default(cuid())
+  quickbooksId       String
+  localTransactionId String
+  connectionId       String
+  connection         QuickbooksConnection @relation(fields: [connectionId], references: [id])
+  transaction        Transaction          @relation(fields: [localTransactionId], references: [id])
+
+  @@unique([connectionId, quickbooksId])
+  @@map("quickbooks_transaction_mappings")
+}
+
+model SyncLog {
+  id               String               @id @default(cuid())
+  connectionId     String
+  entityType       String
+  status           SyncStatus           @default(PENDING)
+  startedAt        DateTime             @default(now())
+  completedAt      DateTime?
+  recordsProcessed Int                  @default(0)
+  errorMessage     String?
+  connection       QuickbooksConnection @relation(fields: [connectionId], references: [id])
+
+  @@map("sync_logs")
+}
+
+model FinancialInsight {
+  id             String       @id @default(cuid())
+  organizationId String
+  type           InsightType
+  title          String
+  description    String
+  data           Json
+  priority       Int          @default(0)
+  isRead         Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@map("financial_insights")
+}
+
+enum UserRole {
+  ADMIN
+  ACCOUNTANT
+  USER
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum TransactionStatus {
+  PENDING
+  CLEARED
+  RECONCILED
+  VOIDED
+}
+
+enum ContactType {
+  CUSTOMER
+  VENDOR
+  EMPLOYEE
+  CONTRACTOR
+  OTHER
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOIDED
+}
+
+enum PaymentMethod {
+  CASH
+  CHECK
+  CREDIT_CARD
+  BANK_TRANSFER
+  ONLINE_PAYMENT
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+  PROCESSING
+}
+
+enum ExpenseStatus {
+  PENDING
+  PAID
+  RECONCILED
+  VOIDED
+}
+
+enum ProductType {
+  INVENTORY
+  SERVICE
+  NON_INVENTORY
+}
+
+enum BankAccountType {
+  CHECKING
+  SAVINGS
+  CREDIT_CARD
+  INVESTMENT
+  OTHER
+}
+
+enum SyncFrequency {
+  HOURLY
+  DAILY
+  WEEKLY
+  MONTHLY
+  MANUAL
+}
+
+enum SyncStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum InsightType {
+  CASH_FLOW
+  PROFITABILITY
+  EXPENSE
+  RECEIVABLES
+  TAX
+  BUDGET
+  GENERAL
+}
