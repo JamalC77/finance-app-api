@@ -1,12 +1,12 @@
 import { Invoice, InvoiceLineItem, InvoiceStatus, Prisma, Transaction } from '@prisma/client';
 import { BaseService, prisma } from './baseService';
 
-export interface InvoiceCreateInput extends Omit<Prisma.InvoiceUncheckedCreateInput, 'organizationId'> {
-  lineItems: Omit<Prisma.InvoiceLineItemUncheckedCreateInput, 'invoiceId'>[];
+export interface InvoiceCreateInput extends Omit<Prisma.InvoiceCreateInput, 'organization'> {
+  lineItems: Prisma.InvoiceLineItemCreateInput[];
 }
 
-export interface InvoiceUpdateInput extends Omit<Prisma.InvoiceUncheckedUpdateInput, 'organizationId'> {
-  lineItems?: Omit<Prisma.InvoiceLineItemUncheckedCreateInput, 'invoiceId'>[];
+export interface InvoiceUpdateInput extends Omit<Prisma.InvoiceUpdateInput, 'organization'> {
+  lineItems?: Prisma.InvoiceLineItemCreateInput[];
 }
 
 export class InvoiceService implements BaseService<Invoice> {

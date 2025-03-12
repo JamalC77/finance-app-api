@@ -8,11 +8,11 @@ export interface LedgerEntryInput {
   creditAccountId?: string;
 }
 
-export interface TransactionCreateInput extends Omit<Prisma.TransactionUncheckedCreateInput, 'organizationId'> {
+export interface TransactionCreateInput extends Omit<Prisma.TransactionCreateInput, 'organization' | 'ledgerEntries'> {
   ledgerEntries: LedgerEntryInput[];
 }
 
-export interface TransactionUpdateInput extends Omit<Prisma.TransactionUncheckedUpdateInput, 'organizationId'> {
+export interface TransactionUpdateInput extends Omit<Prisma.TransactionUpdateInput, 'organization' | 'ledgerEntries'> {
   ledgerEntries?: LedgerEntryInput[];
 }
 

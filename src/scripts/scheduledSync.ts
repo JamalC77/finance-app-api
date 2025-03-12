@@ -1,103 +1,141 @@
 /**
- * Scheduled job to sync data from QuickBooks and generate insights
- * Run this script on a regular schedule (e.g., using cron)
+ * Scheduled QuickBooks Synchronization Script
+ * 
+ * This script is designed to be run by a scheduler (e.g., cron) at regular intervals.
+ * It checks for organizations with QuickBooks connections and runs syncs based on
+ * their configured frequency.
  */
 
-import { PrismaClient } from '@prisma/client';
-import * as dotenv from 'dotenv';
+import { prisma } from '../utils/prisma';
 import { quickbooksSyncController } from '../controllers/quickbooks/quickbooksSyncController';
-import { financialInsightService } from '../services/insights/financialInsightService';
-import { bigQueryService } from '../services/google/bigQueryService';
+import { snowflakeController } from '../controllers/snowflakeController';
+import { quickbooksToSnowflakeController } from '../controllers/quickbooks/quickbooksToSnowflakeController';
+import dotenv from 'dotenv';
 
 // Load environment variables
 dotenv.config();
 
-// Initialize Prisma client
-const prisma = new PrismaClient();
+// Flag to determine whether to use direct export
+const USE_DIRECT_EXPORT = process.env.USE_DIRECT_EXPORT === 'true';
 
-/**
- * Main function to run the scheduled sync
- */
-async function runScheduledSync() {
-  console.log('Starting scheduled sync job at', new Date().toISOString());
+async function main() {
+  console.log('Starting scheduled QuickBooks sync job at', new Date().toISOString());
+  console.log(`Using ${USE_DIRECT_EXPORT ? 'direct export' : 'standard export'} mode`);
   
   try {
-    // Get all organizations with active QuickBooks connections
-    const connections = await prisma.quickbooksConnection.findMany({
-      where: { isActive: true },
-      include: { organization: true }
+    // Get all active QuickBooks connections
+    const activeConnections = await prisma.quickbooksConnection.findMany({
+      where: {
+        isActive: true
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        syncFrequency: true,
+        lastSyncedAt: true
+      }
     });
     
-    console.log(`Found ${connections.length} active QuickBooks connections`);
+    console.log(`Found ${activeConnections.length} active QuickBooks connections`);
     
-    // Process each connection based on sync frequency
-    for (const connection of connections) {
-      const organizationId = connection.organizationId;
-      const now = new Date();
-      
-      // Skip if too soon since last sync
-      if (connection.lastSyncedAt && shouldSkipSync(connection.lastSyncedAt, connection.syncFrequency, now)) {
-        console.log(`Skipping sync for organization ${organizationId} - last synced at ${connection.lastSyncedAt.toISOString()}`);
-        continue;
-      }
-      
-      console.log(`Starting sync for organization ${organizationId}...`);
-      
+    // Process each connection
+    const now = new Date();
+    for (const connection of activeConnections) {
       try {
-        // Sync data from QuickBooks
-        await quickbooksSyncController.startFullSync(organizationId);
-        console.log(`Completed QuickBooks sync for organization ${organizationId}`);
+        // Determine if sync is due based on frequency
+        let shouldSync = false;
         
-        // Export data to BigQuery for analytics
-        await Promise.all([
-          bigQueryService.exportTransactions(organizationId),
-          bigQueryService.exportAccounts(organizationId)
-        ]);
-        console.log(`Completed BigQuery export for organization ${organizationId}`);
+        if (!connection.lastSyncedAt) {
+          // Never synced before, so sync now
+          shouldSync = true;
+        } else {
+          const hoursSinceLastSync = (now.getTime() - connection.lastSyncedAt.getTime()) / (1000 * 60 * 60);
+          
+          // Check if enough time has elapsed since the last sync based on frequency
+          switch (connection.syncFrequency) {
+            case 'HOURLY':
+              shouldSync = hoursSinceLastSync >= 1;
+              break;
+            case 'DAILY':
+              shouldSync = hoursSinceLastSync >= 24;
+              break;
+            case 'WEEKLY':
+              shouldSync = hoursSinceLastSync >= 168; // 7 * 24
+              break;
+            case 'MONTHLY':
+              shouldSync = hoursSinceLastSync >= 720; // 30 * 24
+              break;
+            case 'MANUAL':
+              // Don't automatically sync for manual frequency
+              shouldSync = false;
+              break;
+          }
+        }
         
-        // Generate insights from the data
-        const insightCount = await financialInsightService.generateAllInsights(organizationId);
-        console.log(`Generated ${insightCount} insights for organization ${organizationId}`);
-        
-        console.log(`Completed all tasks for organization ${organizationId}`);
-      } catch (error) {
-        console.error(`Error processing organization ${organizationId}:`, error);
-        // Continue with next organization
+        // Perform sync if due
+        if (shouldSync) {
+          console.log(`Starting sync for organization ${connection.organizationId} (frequency: ${connection.syncFrequency})`);
+          
+          // Temporarily using only the global setting for direct export
+          const useDirectExport = USE_DIRECT_EXPORT;
+          
+          if (useDirectExport) {
+            // Use direct export to Snowflake
+            console.log(`Using direct export for organization ${connection.organizationId}`);
+            await quickbooksToSnowflakeController.startDirectExport(connection.organizationId);
+            
+            // Update the last synced timestamp
+            await prisma.quickbooksConnection.update({
+              where: { organizationId: connection.organizationId },
+              data: { lastSyncedAt: new Date() }
+            });
+            
+            console.log(`Completed direct export for organization ${connection.organizationId}`);
+          } else {
+            // Use standard sync process
+            console.log(`Using standard sync for organization ${connection.organizationId}`);
+            await quickbooksSyncController.startFullSync(connection.organizationId);
+            console.log(`Completed sync for organization ${connection.organizationId}`);
+            
+            // After QuickBooks sync is complete, export to Snowflake if configured
+            if (process.env.SNOWFLAKE_ACCOUNT && process.env.SNOWFLAKE_USERNAME && process.env.SNOWFLAKE_PASSWORD) {
+              try {
+                console.log(`Starting Snowflake export for organization ${connection.organizationId}`);
+                await snowflakeController.createExportLog(connection.organizationId, 'IN_PROGRESS');
+                
+                const exportCounts = await snowflakeController.exportAllData(connection.organizationId);
+                await snowflakeController.createExportLog(connection.organizationId, 'COMPLETED', exportCounts);
+                
+                console.log(`Completed Snowflake export for organization ${connection.organizationId}`);
+              } catch (snowflakeError) {
+                console.error(`Error exporting to Snowflake for org ${connection.organizationId}:`, snowflakeError);
+                const errorMessage = snowflakeError instanceof Error ? snowflakeError.message : 'Unknown error';
+                await snowflakeController.createExportLog(connection.organizationId, 'FAILED', undefined, errorMessage);
+              }
+            }
+          }
+        } else {
+          console.log(`Skipping sync for organization ${connection.organizationId} (not due yet, frequency: ${connection.syncFrequency})`);
+        }
+      } catch (connectionError) {
+        // Log error but continue with other connections
+        console.error(`Error processing connection for org ${connection.organizationId}:`, connectionError);
       }
     }
+    
+    console.log('Scheduled QuickBooks sync job completed at', new Date().toISOString());
   } catch (error) {
-    console.error('Fatal error in scheduled sync job:', error);
+    console.error('Error in scheduled QuickBooks sync job:', error);
+    process.exit(1);
   } finally {
     await prisma.$disconnect();
-    console.log('Scheduled sync job completed at', new Date().toISOString());
   }
 }
 
-/**
- * Determine if sync should be skipped based on frequency
- */
-function shouldSkipSync(lastSyncedAt: Date, syncFrequency: string, now: Date): boolean {
-  const hoursSinceLastSync = (now.getTime() - lastSyncedAt.getTime()) / (1000 * 60 * 60);
-  
-  switch (syncFrequency) {
-    case 'HOURLY':
-      return hoursSinceLastSync < 1;
-    case 'DAILY':
-      return hoursSinceLastSync < 24;
-    case 'WEEKLY':
-      return hoursSinceLastSync < 24 * 7;
-    case 'MONTHLY':
-      return hoursSinceLastSync < 24 * 30;
-    case 'MANUAL':
-      return true; // Always skip automatic sync for manual frequency
-    default:
-      return false;
-  }
-}
-
-// Run the job
-runScheduledSync()
+// Run the main function
+main()
+  .then(() => process.exit(0))
   .catch(error => {
-    console.error('Unhandled error in scheduled sync job:', error);
+    console.error('Unhandled error in scheduled sync script:', error);
     process.exit(1);
   }); 

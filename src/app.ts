@@ -23,6 +23,7 @@ import reportRoutes from './routes/reportRoutes';
 import publicRoutes from './routes/publicRoutes';
 import quickbooksRoutes from './routes/quickbooksRoutes';
 import insightsRoutes from './routes/insightsRoutes';
+import snowflakeRoutes from './routes/snowflakeRoutes';
 
 // Initialize express app
 const app = express();
@@ -53,6 +54,7 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/public', publicRoutes); // Public API routes (don't require authentication)
 app.use('/api/quickbooks', quickbooksRoutes); // Add QuickBooks routes
 app.use('/api/insights', insightsRoutes); // Add insights routes
+app.use('/api/snowflake', snowflakeRoutes); // Add Snowflake routes
 
 // Health check endpoint
 app.get('/api/health', (req: Request, res: Response) => {

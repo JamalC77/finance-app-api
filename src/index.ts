@@ -56,11 +56,6 @@ app.use('/api/categories', noCache, categoryRoutes);
 app.use('/api/quickbooks', noCache, quickbooksRoutes);
 app.use('/api/insights', noCache, insightsRoutes);
 
-// Test route for QuickBooks
-app.get('/api/test-quickbooks', (req, res) => {
-  res.json({ success: true, message: 'QuickBooks test route is working' });
-});
-
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', environment: env.NODE_ENV });

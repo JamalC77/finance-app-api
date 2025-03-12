@@ -5,7 +5,7 @@ import Stripe from 'stripe';
 
 // Initialize Stripe with the API key
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2023-10-16', // Use the latest API version
+  apiVersion: '2025-02-24.acacia', // Use the latest API version
 });
 
 /**
@@ -25,8 +25,7 @@ export const getPublicInvoice = async (req: Request, res: Response) => {
           select: {
             id: true,
             name: true,
-            email: true,
-            logoUrl: true
+            email: true
           }
         },
         contact: {
@@ -57,7 +56,7 @@ export const getPublicInvoice = async (req: Request, res: Response) => {
     }
 
     // Check if the invoice is allowed to be publicly accessed
-    if (invoice.status === 'DRAFT' || invoice.status === 'VOID') {
+    if (invoice.status === 'DRAFT' || invoice.status === 'VOIDED') {
       return res.status(403).json({ error: 'This invoice is not available for public access' });
     }
 
@@ -95,7 +94,7 @@ export const createPublicPaymentIntent = async (req: Request, res: Response) => 
     }
     
     // Check if invoice is available for payment
-    if (invoice.status === 'DRAFT' || invoice.status === 'VOID' || invoice.status === 'PAID') {
+    if (invoice.status === 'DRAFT' || invoice.status === 'VOIDED' || invoice.status === 'PAID') {
       return res.status(400).json({ 
         error: 'This invoice is not available for payment' 
       });

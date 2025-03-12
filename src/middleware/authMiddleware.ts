@@ -86,4 +86,7 @@ export const auth = async (req: Request, res: Response, next: NextFunction) => {
     console.error('Authentication error:', error);
     return res.status(401).json({ error: 'Authentication failed' });
   }
-}; 
+};
+
+// Export auth as authMiddleware for backward compatibility
+export const authMiddleware = auth; 

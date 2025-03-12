@@ -1,5 +1,4 @@
 import crypto from 'crypto';
-import { env } from './env';
 
 /**
  * Utility class for encrypting/decrypting sensitive data
@@ -11,10 +10,13 @@ export class EncryptionUtil {
 
   constructor() {
     // Get encryption key and IV from environment variables
-    const envKey = env.ENCRYPTION.KEY;
-    const envIv = env.ENCRYPTION.IV;
+    const envKey = process.env.ENCRYPTION_KEY;
+    const envIv = process.env.ENCRYPTION_IV;
 
-    // We're now using default values in env.ts, so we don't need to throw here
+    if (!envKey || !envIv) {
+      throw new Error('Encryption key and IV must be defined in environment variables');
+    }
+
     this.key = Buffer.from(envKey, 'utf-8');
     this.iv = Buffer.from(envIv, 'utf-8');
   }

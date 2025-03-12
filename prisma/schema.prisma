@@ -36,6 +36,7 @@ model Organization {
   taxCategories            TaxCategory[]
   transactions             Transaction[]
   users                    User[]
+  directExportLogs         DirectExportLog[]
 
   @@map("organizations")
 }
@@ -339,6 +340,7 @@ model QuickbooksConnection {
   organizationId      String                         @unique
   syncFrequency       SyncFrequency                  @default(DAILY)
   syncSettings        Json?
+  useDirectExport     Boolean?
   accountMappings     QuickbooksAccountMapping[]
   organization        Organization                   @relation(fields: [organizationId], references: [id])
   contactMappings     QuickbooksContactMapping[]
@@ -424,6 +426,28 @@ model FinancialInsight {
   organization   Organization @relation(fields: [organizationId], references: [id])
 
   @@map("financial_insights")
+}
+
+model DirectExportLog {
+  id                String    @id @default(uuid())
+  organizationId    String
+  status            String    // 'IN_PROGRESS', 'COMPLETED', 'FAILED'
+  startedAt         DateTime
+  completedAt       DateTime?
+  entityType        String?   // 'accounts', 'transactions', 'invoices', 'contacts', or null for all
+  accountsCount     Int?
+  transactionsCount Int?
+  invoicesCount     Int?
+  contactsCount     Int?
+  errorMessage      String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  @@index([organizationId])
+  @@index([status])
+  @@map("direct_export_logs")
 }
 
 enum UserRole {

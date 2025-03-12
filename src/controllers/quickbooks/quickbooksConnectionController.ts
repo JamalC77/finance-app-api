@@ -13,24 +13,41 @@ export class QuickbooksConnectionController {
    * @returns Connection details (with sensitive data removed)
    */
   async getConnection(organizationId: string): Promise<any> {
-    const connection = await prisma.quickbooksConnection.findUnique({
-      where: { organizationId }
-    });
+    try {
+      const connection = await prisma.quickbooksConnection.findUnique({
+        where: { organizationId },
+        select: {
+          isActive: true,
+          realmId: true,
+          lastSyncedAt: true,
+          syncFrequency: true,
+          syncSettings: true,
+          createdAt: true,
+          tokenExpiresAt: true,
+          useDirectExport: true
+        }
+      });
 
-    if (!connection) {
-      return { connected: false };
+      if (!connection) {
+        return { connected: false };
+      }
+
+      // Return connection without sensitive data in the format expected by the frontend
+      return {
+        connected: connection.isActive,
+        realmId: connection.realmId,
+        lastSyncedAt: connection.lastSyncedAt,
+        syncFrequency: connection.syncFrequency,
+        syncSettings: connection.syncSettings,
+        createdAt: connection.createdAt,
+        tokenExpiresAt: connection.tokenExpiresAt,
+        useDirectExport: connection.useDirectExport
+      };
+    } catch (error) {
+      console.error('Error getting QuickBooks connection:', error);
+      // Return a default response instead of throwing an error
+      return { connected: false, error: 'Failed to retrieve connection status' };
     }
-
-    // Return connection without sensitive data
-    return {
-      connected: connection.isActive,
-      realmId: connection.realmId,
-      lastSyncedAt: connection.lastSyncedAt,
-      syncFrequency: connection.syncFrequency,
-      syncSettings: connection.syncSettings,
-      createdAt: connection.createdAt,
-      tokenExpiresAt: connection.tokenExpiresAt
-    };
   }
 
   /**
@@ -50,8 +67,9 @@ export class QuickbooksConnectionController {
       throw new ApiError(404, 'QuickBooks connection not found');
     }
 
+    // Update data to save
     const updateData: any = {};
-
+    
     if (syncFrequency) {
       const validFrequencies = ['HOURLY', 'DAILY', 'WEEKLY', 'MONTHLY', 'MANUAL'];
       if (!validFrequencies.includes(syncFrequency)) {
@@ -59,11 +77,12 @@ export class QuickbooksConnectionController {
       }
       updateData.syncFrequency = syncFrequency;
     }
-
+    
     if (syncSettings) {
       updateData.syncSettings = syncSettings;
     }
 
+    // Update the connection
     const updatedConnection = await prisma.quickbooksConnection.update({
       where: { organizationId },
       data: updateData

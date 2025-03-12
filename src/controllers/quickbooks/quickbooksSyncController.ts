@@ -2,8 +2,8 @@ import { prisma } from '../../utils/prisma';
 import { quickbooksApiClient } from '../../services/quickbooks/quickbooksApiClient';
 import { quickbooksAccountService } from '../../services/quickbooks/quickbooksAccountService';
 import { quickbooksContactService } from '../../services/quickbooks/quickbooksContactService';
-// import { quickbooksInvoiceService } from '../../services/quickbooks/quickbooksInvoiceService';
-// import { quickbooksTransactionService } from '../../services/quickbooks/quickbooksTransactionService';
+import { quickbooksInvoiceService } from '../../services/quickbooks/quickbooksInvoiceService';
+import { quickbooksTransactionService } from '../../services/quickbooks/quickbooksTransactionService';
 import { ApiError } from '../../utils/errors';
 
 /**
@@ -55,14 +55,14 @@ export class QuickbooksSyncController {
         where: { organizationId },
         data: { lastSyncedAt: new Date() }
       });
-    } catch (error: any) {
+    } catch (error) {
       // Update the master sync log with error
       await prisma.syncLog.update({
         where: { id: masterSyncLog.id },
         data: {
           status: 'FAILED',
           completedAt: new Date(),
-          errorMessage: error.message || 'Sync failed'
+          errorMessage: error instanceof Error ? error.message : 'Sync failed'
         }
       });
       
@@ -98,22 +98,25 @@ export class QuickbooksSyncController {
     try {
       let recordsProcessed = 0;
 
-      // Sync the specified entity type
-      if (entityType === 'accounts') {
-        recordsProcessed = await quickbooksAccountService.syncAccounts(organizationId, connection.realmId);
-      } else if (entityType === 'contacts') {
-        recordsProcessed = await quickbooksContactService.syncContacts(organizationId, connection.realmId);
-      } else if (entityType === 'invoices') {
-        // Commented out since the service doesn't exist yet
-        // recordsProcessed = await quickbooksInvoiceService.syncInvoices(organizationId, connection.realmId);
-        recordsProcessed = 0; // Placeholder
-      } else if (entityType === 'transactions') {
-        // Commented out since the service doesn't exist yet
-        // recordsProcessed = await quickbooksTransactionService.syncTransactions(organizationId, connection.realmId);
-        recordsProcessed = 0; // Placeholder
+      // Call the appropriate service based on entity type
+      switch (entityType) {
+        case 'accounts':
+          recordsProcessed = await quickbooksAccountService.syncAccounts(organizationId, connection.realmId);
+          break;
+        case 'contacts':
+          recordsProcessed = await quickbooksContactService.syncContacts(organizationId, connection.realmId);
+          break;
+        case 'invoices':
+          recordsProcessed = await quickbooksInvoiceService.syncInvoices(organizationId, connection.realmId);
+          break;
+        case 'transactions':
+          recordsProcessed = await quickbooksTransactionService.syncTransactions(organizationId, connection.realmId);
+          break;
+        default:
+          throw new ApiError(400, `Invalid entity type: ${entityType}`);
       }
 
-      // Update sync log with completion status
+      // Update the sync log
       await prisma.syncLog.update({
         where: { id: syncLog.id },
         data: {
@@ -122,14 +125,14 @@ export class QuickbooksSyncController {
           recordsProcessed
         }
       });
-    } catch (error: any) {
-      // Update sync log with error
+    } catch (error) {
+      // Update the sync log with error
       await prisma.syncLog.update({
         where: { id: syncLog.id },
         data: {
           status: 'FAILED',
           completedAt: new Date(),
-          errorMessage: error.message || 'Sync failed'
+          errorMessage: error instanceof Error ? error.message : 'Sync failed'
         }
       });
       

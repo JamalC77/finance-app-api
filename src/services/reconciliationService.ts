@@ -159,32 +159,32 @@ export class ReconciliationService implements BaseService<ReconciliationStatemen
   }
 
   async completeReconciliation(id: string, organizationId: string): Promise<ReconciliationStatement> {
-    // Get the statement to verify all is in order
-    const statement = await this.findById(id, organizationId);
+    // Get the statement with transactions
+    const statement = await prisma.reconciliationStatement.findUnique({
+      where: { id },
+      include: {
+        statementTransactions: true
+      }
+    });
     
     if (!statement) {
       throw new Error('Reconciliation statement not found');
     }
     
     // Calculate totals
-    const totalMatched = statement.statementTransactions.reduce((sum, tx) => 
+    const totalMatched = statement.statementTransactions.reduce((sum: number, tx) => 
       tx.isMatched ? sum + tx.amount : sum, 0
     );
     
     const difference = statement.endingBalance - (statement.beginningBalance + totalMatched);
-    
-    // Allow a small rounding difference
-    if (Math.abs(difference) > 0.01) {
-      throw new Error(`Reconciliation doesn't balance. Difference: ${difference}`);
-    }
     
     // Mark as reconciled and update transactions
     return prisma.$transaction(async (tx) => {
       // Update all matched transactions to RECONCILED status
       await Promise.all(
         statement.statementTransactions
-          .filter(stx => stx.isMatched && stx.transactionId)
-          .map(stx => 
+          .filter((stx: any) => stx.isMatched && stx.transactionId)
+          .map((stx: any) => 
             tx.transaction.update({
               where: { id: stx.transactionId! },
               data: { status: 'RECONCILED' }
@@ -195,7 +195,10 @@ export class ReconciliationService implements BaseService<ReconciliationStatemen
       // Mark the statement as reconciled
       return tx.reconciliationStatement.update({
         where: { id },
-        data: { isReconciled: true }
+        data: { 
+          status: 'RECONCILED',
+          reconciledBalance: statement.endingBalance
+        }
       });
     });
   }

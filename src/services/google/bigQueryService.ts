@@ -36,9 +36,10 @@ export class BigQueryService {
       await this.createAccountsTable(organizationId);
       await this.createInvoicesTable(organizationId);
       await this.createContactsTable(organizationId);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error initializing BigQuery:', error);
-      throw new ApiError(500, `Failed to initialize BigQuery: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new ApiError(500, `Failed to initialize BigQuery: ${errorMessage}`);
     }
   }
 
@@ -103,9 +104,10 @@ export class BigQueryService {
       await table.insert(transformedTransactions);
       
       return transformedTransactions.length;
-    } catch (error: any) {
-      console.error('Error exporting transactions:', error);
-      throw new ApiError(500, `Failed to export transactions: ${error.message}`);
+    } catch (error) {
+      console.error('Error exporting transactions to BigQuery:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new ApiError(500, `Failed to export transactions: ${errorMessage}`);
     }
   }
 
@@ -151,9 +153,10 @@ export class BigQueryService {
       await table.insert(transformedAccounts);
       
       return transformedAccounts.length;
-    } catch (error: any) {
-      console.error('Error exporting accounts:', error);
-      throw new ApiError(500, `Failed to export accounts: ${error.message}`);
+    } catch (error) {
+      console.error('Error exporting accounts to BigQuery:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new ApiError(500, `Failed to export accounts: ${errorMessage}`);
     }
   }
 
@@ -190,9 +193,11 @@ export class BigQueryService {
       
       const [rows] = await this.bigquery.query(query);
       return rows;
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error analyzing cash flow:', error);
-      throw new ApiError(500, `Failed to analyze cash flow: ${error.message}`);
+      console.error('Error running cash flow analysis:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new ApiError(500, `Failed to analyze cash flow: ${errorMessage}`);
     }
   }
 
@@ -242,9 +247,10 @@ export class BigQueryService {
       
       const [rows] = await this.bigquery.query(query);
       return rows;
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error analyzing expense trends:', error);
-      throw new ApiError(500, `Failed to analyze expense trends: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new ApiError(500, `Failed to analyze expense trends: ${errorMessage}`);
     }
   }
 
@@ -321,9 +327,10 @@ export class BigQueryService {
       
       const [rows] = await this.bigquery.query(query);
       return rows;
-    } catch (error: any) {
-      console.error('Error getting profitability:', error);
-      throw new ApiError(500, `Failed to get profitability: ${error.message}`);
+    } catch (error) {
+      console.error('Error getting profitability data:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new ApiError(500, `Failed to get profitability: ${errorMessage}`);
     }
   }
 

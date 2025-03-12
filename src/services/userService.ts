@@ -4,7 +4,6 @@ import bcrypt from 'bcryptjs';
 
 export interface CreateUserInput extends Omit<Prisma.UserCreateInput, 'password' | 'organization'> {
   password: string;
-  organizationId: string;
 }
 
 export class UserService implements BaseService<User> {
@@ -18,7 +17,8 @@ export class UserService implements BaseService<User> {
         password: hashedPassword,
         organization: {
           connect: { id: organizationId }
-        }
+        },
+        organizationId
       }
     });
   }

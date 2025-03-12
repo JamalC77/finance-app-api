@@ -3,7 +3,6 @@ import querystring from 'querystring';
 import { prisma } from '../../utils/prisma';
 import { encryption } from '../../utils/encryption';
 import { ApiError } from '../../utils/errors';
-import { env } from '../../utils/env';
 
 /**
  * Service for managing QuickBooks OAuth authentication and token lifecycle
@@ -17,13 +16,16 @@ export class QuickbooksAuthService {
 
   constructor() {
     // Load configuration from environment variables
-    this.clientId = env.QUICKBOOKS.CLIENT_ID;
-    this.clientSecret = env.QUICKBOOKS.CLIENT_SECRET;
-    this.redirectUri = env.QUICKBOOKS.REDIRECT_URI;
-    this.apiBaseUrl = env.QUICKBOOKS.API_BASE_URL;
-    this.environment = env.QUICKBOOKS.ENVIRONMENT;
-    
-    // No need to validate here - we're using default values in env.ts
+    this.clientId = process.env.QUICKBOOKS_CLIENT_ID!;
+    this.clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET!;
+    this.redirectUri = process.env.QUICKBOOKS_REDIRECT_URI!;
+    this.apiBaseUrl = process.env.QUICKBOOKS_API_BASE_URL!;
+    this.environment = process.env.QUICKBOOKS_ENVIRONMENT || 'sandbox';
+
+    // Validate required configuration
+    if (!this.clientId || !this.clientSecret || !this.redirectUri || !this.apiBaseUrl) {
+      throw new Error('QuickBooks integration is not properly configured');
+    }
   }
 
   /**
@@ -35,9 +37,13 @@ export class QuickbooksAuthService {
   getAuthorizationUrl(organizationId: string): string {
     const state = encryption.encryptState(organizationId);
     
+    // Log the exact redirect URI being used
+    console.log('Generating authorization URL with redirect URI:', this.redirectUri);
+    
+    // Do NOT encode the redirect_uri here - querystring.stringify will handle the encoding
     const params = {
       client_id: this.clientId,
-      redirect_uri: this.redirectUri,
+      redirect_uri: this.redirectUri, // Use the raw, unencoded redirect URI
       response_type: 'code',
       scope: 'com.intuit.quickbooks.accounting',
       state
@@ -46,8 +52,11 @@ export class QuickbooksAuthService {
     const baseUrl = this.environment === 'sandbox' 
       ? 'https://appcenter.intuit.com/connect/oauth2'
       : 'https://appcenter.intuit.com/connect/oauth2';
+      
+    const authUrl = `${baseUrl}?${querystring.stringify(params)}`;
+    console.log('Generated authorization URL (partial):', authUrl.substring(0, 100) + '...');
     
-    return `${baseUrl}?${querystring.stringify(params)}`;
+    return authUrl;
   }
 
   /**
@@ -60,8 +69,11 @@ export class QuickbooksAuthService {
    */
   async handleCallback(code: string, state: string, realmId: string): Promise<string> {
     try {
+      console.log('Handling QuickBooks callback with:', { code: code.substring(0, 5) + '...', state: state.substring(0, 5) + '...', realmId });
+      
       // Decrypt and validate state parameter
       const organizationId = encryption.decryptState(state);
+      console.log('Decrypted organizationId:', organizationId);
 
       // Ensure the organization exists
       const organization = await prisma.organization.findUnique({
@@ -74,8 +86,9 @@ export class QuickbooksAuthService {
 
       // Exchange authorization code for tokens
       const tokenResponse = await this.getTokensFromCode(code);
+      console.log('Received token response');
 
-      // Store connection details in database
+      // Store connection details in database using upsert
       await prisma.quickbooksConnection.upsert({
         where: { organizationId },
         update: {
@@ -117,16 +130,24 @@ export class QuickbooksAuthService {
         'Authorization': `Basic ${Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64')}`
       };
 
+      // Important: Do NOT encode the redirect_uri here
+      // It must match EXACTLY what was registered in the QuickBooks Developer Portal
+      // and what was used in the authorization request
       const data = querystring.stringify({
         grant_type: 'authorization_code',
         code,
-        redirect_uri: this.redirectUri
+        redirect_uri: this.redirectUri // Use the raw, unencoded redirect URI
       });
 
+      console.log('Requesting tokens with redirect_uri:', this.redirectUri);
+      
       const response = await axios.post(tokenUrl, data, { headers });
       return response.data;
     } catch (error) {
       console.error('Error getting tokens from code:', error);
+      if (axios.isAxiosError(error) && error.response) {
+        console.error('QuickBooks API error response:', error.response.data);
+      }
       throw new ApiError(500, 'Failed to get access tokens from QuickBooks');
     }
   }
@@ -250,8 +271,27 @@ export class QuickbooksAuthService {
       }
 
       // Revoke tokens at QuickBooks
-      // Note: This would normally call the QuickBooks revocation endpoint
-      // but I'm skipping for brevity
+      try {
+        const refreshToken = encryption.decrypt(connection.refreshToken);
+        
+        // Call QuickBooks revocation endpoint
+        const revocationUrl = 'https://developer.api.intuit.com/v2/oauth2/tokens/revoke';
+        const headers = {
+          'Content-Type': 'application/json',
+          'Authorization': `Basic ${Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64')}`
+        };
+        
+        const data = {
+          token: refreshToken,
+          token_type_hint: 'refresh_token'
+        };
+        
+        await axios.post(revocationUrl, data, { headers });
+        console.log(`Successfully revoked QuickBooks tokens for org ${organizationId}`);
+      } catch (revocationError) {
+        // Log but continue - we'll still mark the connection as inactive
+        console.error('Error revoking QuickBooks tokens:', revocationError);
+      }
 
       // Update the connection status
       return prisma.quickbooksConnection.update({

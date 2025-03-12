@@ -48,9 +48,10 @@ export class FinancialInsightService {
       });
 
       return count;
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error generating insights:', error);
-      throw new ApiError(500, `Failed to generate insights: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new ApiError(500, `Failed to generate insights: ${errorMessage}`);
     }
   }
 
@@ -221,7 +222,7 @@ export class FinancialInsightService {
       const openInvoices = await prisma.invoice.findMany({
         where: {
           organizationId,
-          status: { in: ['SENT', 'OVERDUE', 'PARTIALLY_PAID'] as any[] }
+          status: { in: ['SENT', 'PARTIALLY_PAID', 'OVERDUE'] }
         },
         include: {
           contact: true
@@ -251,7 +252,7 @@ export class FinancialInsightService {
             organizationId,
             type: 'RECEIVABLES',
             title: 'Overdue Receivables',
-            description: `You have ${overdueInvoices.length} overdue invoices totaling ${totalOverdueAmount.toFixed(2)} ${openInvoices[0]?.organization?.defaultCurrency || 'USD'}.`,
+            description: `You have ${overdueInvoices.length} overdue invoices totaling ${totalOverdueAmount.toFixed(2)} USD.`,
             priority: totalOverdueAmount > 10000 ? 5 : (totalOverdueAmount > 5000 ? 4 : 3),
             data: {
               overdueCount: overdueInvoices.length,

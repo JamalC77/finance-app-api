@@ -1,6 +1,6 @@
 # Finance App API
 
-This is the backend API for the Finance App, built with Express.js and TypeScript.
+This is the backend API for the Finance App, providing the necessary endpoints for the frontend and handling data processing.
 
 ## Project Structure
 
@@ -26,50 +26,115 @@ finance-app-api/
 
 - Node.js (v14 or higher)
 - npm or yarn
-- MongoDB (optional, depending on your setup)
+- PostgreSQL database
 
 ### Installation
 
 1. Clone the repository
-2. Install dependencies:
+2. Navigate to the API directory:
+   ```
+   cd finance-app-api
+   ```
+3. Install dependencies:
    ```
    npm install
    ```
-3. Set up environment variables:
+4. Set up environment variables:
    ```
    cp .env.example .env
    ```
-4. Edit the `.env` file with your actual API keys and secrets
+5. Edit the `.env` file with your actual database connection string and API keys
 
-### Development
+### Running the API
 
-Start the development server:
-
+For development:
 ```
 npm run dev
 ```
 
-The server will run on http://localhost:5000 by default.
-
-### Building for Production
-
-Build the application:
-
+For production:
 ```
 npm run build
+npm start
 ```
 
-This will create a `dist` directory with the compiled JavaScript.
+## Setting Up QuickBooks Integration
 
-### Deployment
+### Creating a QuickBooks Developer Account
 
-You can use the deployment script to prepare the application for deployment:
+1. Sign up for a developer account at [QuickBooks Developer Portal](https://developer.intuit.com/)
+2. Create a new app:
+   - Go to Dashboard → Create an app
+   - Select API type: "Accounting"
+   - Development type: "Web app"
+   - Enter app name (e.g., "Finance App")
+3. Configure OAuth Settings:
+   - Add Redirect URI: `https://your-api-url.com/api/quickbooks/callback` (update for your deployment)
+   - Add development URI: `http://localhost:5000/api/quickbooks/callback` (for local testing)
+4. Note your Client ID and Client Secret
+
+### Environment Variables for QuickBooks
+
+Add the following to your `.env` file:
 
 ```
-bash scripts/deploy.sh
+# QuickBooks Integration
+QUICKBOOKS_CLIENT_ID=your_quickbooks_client_id
+QUICKBOOKS_CLIENT_SECRET=your_quickbooks_client_secret
+QUICKBOOKS_REDIRECT_URI=https://your-api-url.com/api/quickbooks/callback
+QUICKBOOKS_ENVIRONMENT=sandbox # or production
+QUICKBOOKS_API_BASE_URL=https://sandbox-quickbooks.api.intuit.com/v3 # or production URL
+
+# Encryption (for storing tokens securely)
+ENCRYPTION_KEY=your_32_character_encryption_key
+ENCRYPTION_IV=your_16_character_encryption_iv
 ```
 
-This will create a deployment package in the `deploy` directory.
+### Running Scheduled Sync
+
+To manually run the scheduled sync job:
+
+```
+npm run quickbooks:sync
+```
+
+For production, set up a cron job to run the sync at regular intervals:
+
+```
+# Run every hour
+0 * * * * cd /path/to/finance-app-api && npm run quickbooks:sync >> logs/quickbooks-sync.log 2>&1
+```
+
+## API Documentation
+
+The API provides the following endpoints:
+
+### Authentication
+- `/api/auth/register` - Register a new user
+- `/api/auth/login` - Login an existing user
+- `/api/auth/me` - Get current user info
+
+### QuickBooks Integration
+- `/api/quickbooks/auth/url` - Get QuickBooks authorization URL
+- `/api/quickbooks/callback` - OAuth callback handler
+- `/api/quickbooks/connection` - Get connection status
+- `/api/quickbooks/connection/settings` - Update connection settings
+- `/api/quickbooks/connection` (DELETE) - Disconnect from QuickBooks
+- `/api/quickbooks/sync` - Trigger a full sync
+- `/api/quickbooks/sync/status` - Get sync status
+- `/api/quickbooks/sync/:entityType` - Sync a specific entity type
+- `/api/quickbooks/sync/history` - Get sync history
+
+### Other Endpoints
+- `/api/transactions` - CRUD for transactions
+- `/api/invoices` - CRUD for invoices
+- `/api/expenses` - CRUD for expenses
+- `/api/contacts` - CRUD for contacts
+- `/api/accounts` - CRUD for accounts
+
+## Deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for instructions on deploying the API.
 
 ## API Endpoints
 

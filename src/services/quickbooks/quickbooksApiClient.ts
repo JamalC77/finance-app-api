@@ -1,7 +1,6 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { quickbooksAuthService } from './quickbooksAuthService';
 import { ApiError } from '../../utils/errors';
-import { env } from '../../utils/env';
 
 /**
  * Client for interacting with the QuickBooks API
@@ -11,8 +10,11 @@ export class QuickbooksApiClient {
   private baseUrl: string;
 
   constructor() {
-    // Use the environment helper to get the API base URL
-    this.baseUrl = env.QUICKBOOKS.API_BASE_URL || 'https://sandbox-quickbooks.api.intuit.com/v3';
+    this.baseUrl = process.env.QUICKBOOKS_API_BASE_URL!;
+
+    if (!this.baseUrl) {
+      throw new Error('QuickBooks API base URL is not configured');
+    }
   }
 
   /**
@@ -175,18 +177,11 @@ export class QuickbooksApiClient {
    */
   private handleApiError(error: any, method: string, endpoint: string): never {
     console.error(`QuickBooks API ${method} ${endpoint} error:`, error);
-    
+
     if (error.response) {
-      // The request was made and the server responded with a non-2xx status
+      // The request was made and the server responded with an error status
       const statusCode = error.response.status;
-      const responseData = error.response.data;
-      
-      let message = `QuickBooks API error (${statusCode})`;
-      
-      if (responseData && responseData.Fault && responseData.Fault.Error && responseData.Fault.Error[0]) {
-        message = `${message}: ${responseData.Fault.Error[0].Message} (${responseData.Fault.Error[0].code})`;
-      }
-      
+      const message = error.response.data?.Fault?.Error?.[0]?.Message || 'QuickBooks API error';
       throw new ApiError(statusCode, message);
     } else if (error.request) {
       // The request was made but no response was received
