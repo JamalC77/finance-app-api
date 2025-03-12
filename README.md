@@ -1,11 +1,11 @@
-# Finance App API
+# CFO Line API
 
-This is the backend API for the Finance App, providing the necessary endpoints for the frontend and handling data processing.
+This is the backend API for CFO Line, providing the necessary endpoints for the frontend and handling data processing.
 
 ## Project Structure
 
 ```
-finance-app-api/
+cfo-line-api/
 ├── src/
 │   ├── controllers/    # Request handlers
 │   ├── services/       # Business logic and external service integrations

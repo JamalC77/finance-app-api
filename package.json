@@ -1,7 +1,7 @@
 {
-  "name": "finance-app-api",
+  "name": "cfo-line-api",
   "version": "1.0.0",
-  "description": "Backend API for Finance App",
+  "description": "Backend API for CFO Line",
   "main": "dist/index.js",
   "scripts": {
     "start": "node dist/index.js",
