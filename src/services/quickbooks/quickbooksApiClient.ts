@@ -160,10 +160,31 @@ export class QuickbooksApiClient {
   async query(organizationId: string, realmId: string, query: string): Promise<any> {
     try {
       const api = await this.getApiInstance(organizationId, realmId);
+      
+      // According to the QuickBooks API docs:
+      // 1. Encode the query as a URL parameter
       const encodedQuery = encodeURIComponent(query);
+      
+      // 2. Log the query for debugging
+      console.log(`🔍 [QB API] Executing query: ${query}`);
+      
+      // 3. Send the query as a GET request with the query parameter
       const response = await api.get(`/query?query=${encodedQuery}`);
+      
+      // Log a success message
+      console.log(`✅ [QB API] Query succeeded, response:`, 
+        JSON.stringify(response.data.QueryResponse || {}, null, 2).substring(0, 200) + '...');
+      
       return response.data;
     } catch (error) {
+      console.log(`❌ [QB API] Query failed: ${query}`);
+      
+      if (error.response && error.response.data) {
+        console.log(`❌ [QB API] Error details:`, JSON.stringify(error.response.data, null, 2));
+      } else {
+        console.log(`❌ [QB API] Error:`, error);
+      }
+      
       this.handleApiError(error, 'QUERY', query);
     }
   }
@@ -181,14 +202,38 @@ export class QuickbooksApiClient {
     if (error.response) {
       // The request was made and the server responded with an error status
       const statusCode = error.response.status;
-      const message = error.response.data?.Fault?.Error?.[0]?.Message || 'QuickBooks API error';
-      throw new ApiError(statusCode, message);
+      
+      // Extract detailed error information from QuickBooks API response
+      let errorMessage = 'QuickBooks API error';
+      
+      if (error.response.data?.Fault) {
+        const fault = error.response.data.Fault;
+        
+        if (fault.Error && fault.Error.length > 0) {
+          const qbError = fault.Error[0];
+          errorMessage = `${qbError.Message || 'Unknown error'} (Code: ${qbError.code || 'Unknown'})`;
+          
+          // Log detailed error information
+          console.error('QB API Error Details:', {
+            code: qbError.code,
+            message: qbError.Message,
+            detail: qbError.Detail,
+            element: qbError.element
+          });
+        } else {
+          errorMessage = `${fault.type || 'Unknown fault'}: ${fault.message || 'Unknown message'}`;
+        }
+      }
+      
+      throw new ApiError(statusCode, errorMessage);
     } else if (error.request) {
       // The request was made but no response was received
+      console.error('No response received from QuickBooks API:', error.request);
       throw new ApiError(503, 'No response from QuickBooks API');
     } else {
       // Something happened in setting up the request
-      throw new ApiError(500, `Error making QuickBooks API request: ${error.message}`);
+      console.error('Error setting up QuickBooks API request:', error.message);
+      throw new ApiError(500, `QuickBooks API setup error: ${error.message}`);
     }
   }
 }
