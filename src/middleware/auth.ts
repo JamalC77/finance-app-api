@@ -30,17 +30,6 @@ export const authenticateJWT = (req: Request, res: Response, next: NextFunction)
     const authHeader = req.headers.authorization;
     
     if (!authHeader) {
-      // For development purposes, bypass authentication if JWT_SECRET is set to development mode
-      if (env.NODE_ENV === 'development' && env.JWT_SECRET === 'dev-jwt-secret-key-replace-in-production') {
-        // This is a development bypass - should NEVER be used in production
-        req.user = { 
-          id: 'dev-user-id', 
-          email: 'dev@example.com',
-          organizationId: 'dev-org-id',
-          role: 'ADMIN'
-        };
-        return next();
-      }
       return res.status(401).json({ message: 'No authorization token provided' });
     }
     
