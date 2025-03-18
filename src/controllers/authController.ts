@@ -83,11 +83,21 @@ export const register = async (req: Request, res: Response) => {
  */
 export const login = async (req: Request, res: Response) => {
   try {
+    // Log the request for debugging
+    console.log('Login request received:', {
+      origin: req.headers.origin,
+      contentType: req.headers['content-type'],
+      method: req.method,
+      body: typeof req.body === 'object' ? 'present' : 'missing'
+    });
+
     const { email, password } = req.body;
 
     // Validate input
     if (!email || !password) {
-      return res.status(400).json({ error: 'Please provide email and password' });
+      return res.status(400)
+        .header('Access-Control-Allow-Origin', '*')
+        .json({ error: 'Please provide email and password' });
     }
 
     // Find user
@@ -96,13 +106,17 @@ export const login = async (req: Request, res: Response) => {
     });
 
     if (!user) {
-      return res.status(400).json({ error: 'Invalid credentials' });
+      return res.status(400)
+        .header('Access-Control-Allow-Origin', '*')
+        .json({ error: 'Invalid credentials' });
     }
 
     // Verify password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(400).json({ error: 'Invalid credentials' });
+      return res.status(400)
+        .header('Access-Control-Allow-Origin', '*')
+        .json({ error: 'Invalid credentials' });
     }
 
     // Create JWT
@@ -117,6 +131,9 @@ export const login = async (req: Request, res: Response) => {
       { expiresIn: '1d' }
     );
 
+    // Set explicit CORS headers
+    res.header('Access-Control-Allow-Origin', '*');
+
     // Return user (without password) and token
     return res.status(200).json({
       token,
@@ -130,7 +147,9 @@ export const login = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Login error:', error);
-    return res.status(500).json({ error: 'Server error during login' });
+    return res.status(500)
+      .header('Access-Control-Allow-Origin', '*')
+      .json({ error: 'Server error during login' });
   }
 };
 

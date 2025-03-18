@@ -33,17 +33,29 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 })); // Security headers with less strict CORS policy
 
-// Simpler, more permissive CORS configuration for troubleshooting
+// Super permissive CORS configuration for troubleshooting
 app.use(cors({
-  origin: true, // Allow all origins for now
-  credentials: true,
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept']
 }));
 
+// Add CORS headers to all responses
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  next();
+});
+
 app.use(express.json()); // Parse JSON bodies
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
 app.use(morgan(isDev ? 'dev' : 'combined')); // Logging
+
+// Handle preflight requests for all routes
+app.options('*', (req, res) => {
+  res.sendStatus(204);
+});
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -60,15 +72,6 @@ app.use('/api/accounts', noCache, accountRoutes);
 app.use('/api/categories', noCache, categoryRoutes);
 app.use('/api/quickbooks', noCache, quickbooksRoutes);
 app.use('/api/insights', noCache, insightsRoutes);
-
-// Explicit OPTIONS handler for auth login
-app.options('/api/auth/login', (req, res) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
-  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Origin,Accept');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.sendStatus(204);
-});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
