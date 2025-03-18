@@ -83,22 +83,27 @@ export const register = async (req: Request, res: Response) => {
  */
 export const login = async (req: Request, res: Response) => {
   try {
-    // Log the request for debugging
-    console.log('Login request received:', {
-      origin: req.headers.origin,
-      contentType: req.headers['content-type'],
-      method: req.method,
-      body: typeof req.body === 'object' ? 'present' : 'missing'
-    });
+    // Enhanced logging for debugging
+    console.log('=====================================================');
+    console.log('Login request received at:', new Date().toISOString());
+    console.log('Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('Body type:', typeof req.body);
+    console.log('Body is object:', req.body !== null && typeof req.body === 'object');
+    console.log('Body keys:', req.body ? Object.keys(req.body) : 'No body');
+    console.log('Raw body:', JSON.stringify(req.body, null, 2));
+    console.log('=====================================================');
 
     const { email, password } = req.body;
 
     // Validate input
     if (!email || !password) {
+      console.log('❌ Login failed: Missing email or password');
       return res.status(400)
         .header('Access-Control-Allow-Origin', '*')
         .json({ error: 'Please provide email and password' });
     }
+
+    console.log('👤 Attempting login for email:', email);
 
     // Find user
     const user = await prisma.user.findUnique({
@@ -106,6 +111,7 @@ export const login = async (req: Request, res: Response) => {
     });
 
     if (!user) {
+      console.log('❌ Login failed: User not found');
       return res.status(400)
         .header('Access-Control-Allow-Origin', '*')
         .json({ error: 'Invalid credentials' });
@@ -114,10 +120,13 @@ export const login = async (req: Request, res: Response) => {
     // Verify password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
+      console.log('❌ Login failed: Invalid password');
       return res.status(400)
         .header('Access-Control-Allow-Origin', '*')
         .json({ error: 'Invalid credentials' });
     }
+
+    console.log('✅ Login successful for user:', user.email);
 
     // Create JWT
     const token = jwt.sign(
@@ -146,7 +155,7 @@ export const login = async (req: Request, res: Response) => {
       }
     });
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('❌ Login error:', error);
     return res.status(500)
       .header('Access-Control-Allow-Origin', '*')
       .json({ error: 'Server error during login' });

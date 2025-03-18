@@ -48,8 +48,18 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json()); // Parse JSON bodies
-app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
+// Body parsing middleware - place this BEFORE routes
+app.use(express.json({ limit: '50mb' })); // Parse JSON bodies with increased limit
+app.use(express.urlencoded({ extended: true, limit: '50mb' })); // Parse URL-encoded bodies with increased limit
+
+// Request logger for debugging
+app.use((req, res, next) => {
+  if (req.method === 'POST' || req.method === 'PUT') {
+    console.log(`${req.method} ${req.url} - Content-Type: ${req.headers['content-type']}`);
+  }
+  next();
+});
+
 app.use(morgan(isDev ? 'dev' : 'combined')); // Logging
 
 // Handle preflight requests for all routes
