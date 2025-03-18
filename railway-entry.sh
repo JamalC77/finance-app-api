@@ -21,9 +21,15 @@ else
   echo "ERROR: schema.prisma file NOT found!"
 fi
 
-# Try to generate Prisma client
-echo "Generating Prisma client..."
+# Try to generate Prisma client again
+echo "Regenerating Prisma client..."
 npx prisma generate --schema=/app/prisma/schema.prisma
+
+# Check if dist directory exists or is empty
+if [ ! -d "/app/dist" ] || [ -z "$(ls -A /app/dist)" ]; then
+  echo "Dist directory empty or not found, attempting to rebuild..."
+  npm run build:tsc -- --skipLibCheck --noEmit false --noEmitOnError false || true
+fi
 
 # Start the application
 echo "Starting application..."
