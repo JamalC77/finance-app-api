@@ -1,0 +1,33 @@
+{
+  "providers": [
+    "node",
+    "python3"
+  ],
+  "buildImage": "node:18",
+  "variables": {
+    "NODE_ENV": "production"
+  },
+  "phases": {
+    "install": {
+      "cmds": [
+        "npm ci"
+      ]
+    },
+    "setup": {
+      "cmds": [
+        "mkdir -p /app/prisma",
+        "cp -r ./prisma/* /app/prisma/"
+      ]
+    },
+    "build": {
+      "dependsOn": ["install", "setup"],
+      "cmds": [
+        "npx prisma generate --schema=./prisma/schema.prisma",
+        "npm run build"
+      ]
+    }
+  },
+  "start": {
+    "cmd": "npm start"
+  }
+} 

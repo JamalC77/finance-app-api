@@ -8,17 +8,20 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy package files
+# Copy package files first
 COPY package.json package-lock.json ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm install
 
-# Copy app source
+# Copy prisma files separately to ensure they're included
+COPY prisma ./prisma/
+
+# Generate Prisma client with explicit schema path
+RUN npx prisma generate --schema=./prisma/schema.prisma
+
+# Now copy the rest of the app
 COPY . .
-
-# Generate Prisma client first
-RUN npx prisma generate
 
 # Build the application
 RUN npm run build
