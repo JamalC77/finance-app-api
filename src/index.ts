@@ -33,42 +33,12 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 })); // Security headers with less strict CORS policy
 
-// Define allowed origins
-const allowedOrigins = [
-  'http://localhost:3000',              // Local development
-  'https://localhost:3000',             // Local development with HTTPS
-  'http://127.0.0.1:3000',              // Local alternative
-  'https://thecfoline.com',             // Production frontend
-  'http://thecfoline.com',              // Production frontend without HTTPS
-  'https://www.thecfoline.com',         // Production frontend with www
-  'http://www.thecfoline.com',          // Production frontend with www without HTTPS
-  'https://cfo-line-api.up.railway.app', // Railway API URL
-  'http://localhost:5000',              // Local API URL (for testing)
-  'https://localhost:5000',             // Local API URL with HTTPS
-  process.env.FRONTEND_URL || '',      // Dynamic frontend URL from environment
-].filter(Boolean); // Remove empty strings
-
-// Configure CORS with specific origins
+// Simpler, more permissive CORS configuration for troubleshooting
 app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, etc.)
-    if (!origin) return callback(null, true);
-    
-    // Check if the origin is allowed
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    
-    // Log unauthorized attempts in development
-    if (isDev) {
-      console.log(`CORS blocked request from: ${origin}`);
-    }
-    
-    callback(new Error('Not allowed by CORS'));
-  },
+  origin: true, // Allow all origins for now
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept']
 }));
 
 app.use(express.json()); // Parse JSON bodies
@@ -90,6 +60,15 @@ app.use('/api/accounts', noCache, accountRoutes);
 app.use('/api/categories', noCache, categoryRoutes);
 app.use('/api/quickbooks', noCache, quickbooksRoutes);
 app.use('/api/insights', noCache, insightsRoutes);
+
+// Explicit OPTIONS handler for auth login
+app.options('/api/auth/login', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
+  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Origin,Accept');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.sendStatus(204);
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
