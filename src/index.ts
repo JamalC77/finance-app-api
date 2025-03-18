@@ -39,11 +39,13 @@ const allowedOrigins = [
   'https://localhost:3000',             // Local development with HTTPS
   'http://127.0.0.1:3000',              // Local alternative
   'https://thecfoline.com',             // Production frontend
+  'http://thecfoline.com',              // Production frontend without HTTPS
+  'https://www.thecfoline.com',         // Production frontend with www
+  'http://www.thecfoline.com',          // Production frontend with www without HTTPS
   'https://cfo-line-api.up.railway.app', // Railway API URL
   'http://localhost:5000',              // Local API URL (for testing)
   'https://localhost:5000',             // Local API URL with HTTPS
   process.env.FRONTEND_URL || '',      // Dynamic frontend URL from environment
-  '*'                                  // Fallback (remove in production)
 ].filter(Boolean); // Remove empty strings
 
 // Configure CORS with specific origins
@@ -53,7 +55,7 @@ app.use(cors({
     if (!origin) return callback(null, true);
     
     // Check if the origin is allowed
-    if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+    if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
     
