@@ -1,12 +1,9 @@
 [build]
-builder = "nixpacks"
-buildCommand = "npm install && npx prisma generate && npm run build"
+builder = "DOCKERFILE"
 
 [deploy]
-startCommand = "npm start"
+startCommand = "node bare-health.js"
 healthcheckPath = "/health"
-healthcheckTimeout = 100
-
-[nixpacks]
-python = "3.10"
-copyDirectories = ["prisma"] 
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10 
