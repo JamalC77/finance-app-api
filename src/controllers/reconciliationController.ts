@@ -5,10 +5,13 @@ import { v4 as uuidv4 } from 'uuid';
 const csv = require('csv-parser');
 import * as fs from 'fs';
 import { Readable } from 'stream';
+// Use xml2js instead of ofx
 // @ts-ignore
-const ofx = require('ofx');
+import * as xml2js from 'xml2js';
+import { promisify } from 'util';
 
 const prisma = new PrismaClient();
+const parseXmlString = promisify(xml2js.parseString);
 
 /**
  * Get reconciliation statements for an account
@@ -232,7 +235,7 @@ export const importStatementTransactions = async (req: Request, res: Response) =
     } else if (fileType === 'ofx') {
       // Parse OFX content
       const buffer = Buffer.from(fileContent, 'base64');
-      const ofxData = ofx.parse(buffer.toString());
+      const ofxData = buffer.toString();
       
       // Process OFX data
       importedTransactions = await processOfxData(ofxData, statement);
@@ -294,20 +297,23 @@ const processOfxData = async (ofxData: any, statement: any) => {
   const importedTransactions = [];
   
   try {
-    // Extract transactions from OFX data structure
-    const transactions = ofxData.OFX?.BANKMSGSRSV1?.STMTTRNRS?.STMTRS?.BANKTRANLIST?.STMTTRN || [];
+    // Parse the OFX data as XML
+    const xmlData = await parseXmlString(ofxData) as any;
+    
+    // Extract transactions from XML data structure (adjust based on actual structure)
+    const transactions = xmlData?.OFX?.BANKMSGSRSV1?.[0]?.STMTTRNRS?.[0]?.STMTRS?.[0]?.BANKTRANLIST?.[0]?.STMTTRN || [];
     
     for (const txn of Array.isArray(transactions) ? transactions : [transactions]) {
-      // Create statement transaction from OFX data
+      // Create statement transaction from XML data
       const transaction = await prisma.statementTransaction.create({
         data: {
           id: uuidv4(),
           statementId: statement.id,
-          date: new Date(txn.DTPOSTED),
-          description: txn.MEMO || txn.NAME,
-          amount: parseFloat(txn.TRNAMT),
-          reference: txn.FITID,
-          type: mapOfxType(txn.TRNTYPE),
+          date: new Date(txn.DTPOSTED?.[0] || new Date()),
+          description: txn.MEMO?.[0] || txn.NAME?.[0] || 'Unknown',
+          amount: parseFloat(txn.TRNAMT?.[0] || '0'),
+          reference: txn.FITID?.[0] || uuidv4(),
+          type: mapOfxType(txn.TRNTYPE?.[0] || 'OTHER'),
           isReconciled: false
         }
       });

@@ -33,25 +33,9 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 })); // Security headers with less strict CORS policy
 
-// Configure CORS to allow requests from your frontend
+// Configure CORS to allow ALL origins temporarily for debugging
 app.use(cors({
-  origin: function(origin, callback) {
-    const allowedOrigins = [
-      env.FRONTEND_URL,
-      'http://localhost:3000',
-      'https://finance-app.vercel.app',
-      'https://thecfoline.com',
-      'https://thecfoline.vercel.app'
-    ];
-    
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      console.log('CORS blocked origin:', origin);
-      callback(null, true); // Temporarily allow all origins in production
-    }
-  },
+  origin: '*', // Allow all origins temporarily
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
@@ -98,7 +82,7 @@ app.use(apiErrorHandler);
 
 // Start server
 const PORT = env.PORT || 5000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running in ${env.NODE_ENV} mode on port ${PORT}`);
 });
 
