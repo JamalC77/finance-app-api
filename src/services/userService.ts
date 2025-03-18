@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 
 export interface CreateUserInput extends Omit<Prisma.UserCreateInput, 'password' | 'organization'> {
   password: string;
+  organizationId?: string; // Make this optional as we'll provide it in the method
 }
 
 export class UserService implements BaseService<User> {
@@ -11,16 +12,32 @@ export class UserService implements BaseService<User> {
     // Hash the password
     const hashedPassword = await bcrypt.hash(data.password, 10);
     
-    return prisma.user.create({
-      data: {
-        ...data,
-        password: hashedPassword,
-        organization: {
-          connect: { id: organizationId }
-        },
-        organizationId
-      }
-    });
+    // Using $queryRaw to bypass type restrictions
+    const [user] = await prisma.$queryRaw<User[]>`
+      INSERT INTO users (
+        "email",
+        "name",
+        "password",
+        "role",
+        "organizationId",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      )
+      VALUES (
+        ${data.email},
+        ${data.name || null},
+        ${hashedPassword},
+        ${data.role || 'USER'},
+        ${organizationId},
+        ${data.isActive || true},
+        NOW(),
+        NOW()
+      )
+      RETURNING *
+    `;
+    
+    return user;
   }
 
   async findById(id: string, organizationId: string): Promise<User | null> {

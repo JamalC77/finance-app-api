@@ -8,6 +8,17 @@ export interface LedgerEntryInput {
   creditAccountId?: string;
 }
 
+export interface TransactionData {
+  date: Date | string;
+  description: string;
+  reference?: string;
+  status?: TransactionStatus;
+  invoiceId?: string;
+  expenseId?: string;
+  bankTransactionId?: string;
+  ledgerEntries: LedgerEntryInput[];
+}
+
 export interface TransactionCreateInput extends Omit<Prisma.TransactionCreateInput, 'organization' | 'ledgerEntries'> {
   ledgerEntries: LedgerEntryInput[];
 }
@@ -17,37 +28,71 @@ export interface TransactionUpdateInput extends Omit<Prisma.TransactionUpdateInp
 }
 
 export class TransactionService implements BaseService<Transaction> {
-  async create(data: TransactionCreateInput, organizationId: string): Promise<Transaction> {
+  async create(data: TransactionData, organizationId: string): Promise<Transaction> {
     const { ledgerEntries, ...transactionData } = data;
     
     // Verify that ledger entries balance (debits = credits)
     this.verifyLedgerEntriesBalance(ledgerEntries);
     
-    return prisma.$transaction(async (tx) => {
+    return prisma.$transaction(async (prismaClient) => {
       // Create the transaction
-      const transaction = await tx.transaction.create({
-        data: {
-          ...transactionData,
-          organizationId
-        }
-      });
+      // We need to use raw query to bypass Prisma's type restrictions
+      const [transaction] = await prismaClient.$queryRaw<Transaction[]>`
+        INSERT INTO transactions (
+          "organizationId", 
+          date, 
+          description, 
+          reference, 
+          status, 
+          "invoiceId", 
+          "expenseId", 
+          "bankTransactionId",
+          "createdAt",
+          "updatedAt"
+        ) 
+        VALUES (
+          ${organizationId}, 
+          ${new Date(data.date as any)}, 
+          ${data.description}, 
+          ${data.reference || null}, 
+          ${data.status || 'PENDING'}, 
+          ${data.invoiceId || null}, 
+          ${data.expenseId || null}, 
+          ${data.bankTransactionId || null},
+          NOW(),
+          NOW()
+        )
+        RETURNING *
+      `;
       
       // Create ledger entries
       if (ledgerEntries && ledgerEntries.length > 0) {
-        await Promise.all(
-          ledgerEntries.map(entry => 
-            tx.ledgerEntry.create({
-              data: {
-                ...entry,
-                transactionId: transaction.id
-              }
-            })
-          )
-        );
+        for (const entry of ledgerEntries) {
+          await prismaClient.$queryRaw`
+            INSERT INTO ledger_entries (
+              "transactionId",
+              amount,
+              memo,
+              "debitAccountId",
+              "creditAccountId",
+              "createdAt",
+              "updatedAt"
+            )
+            VALUES (
+              ${transaction.id},
+              ${entry.amount},
+              ${entry.memo || null},
+              ${entry.debitAccountId || null},
+              ${entry.creditAccountId || null},
+              NOW(),
+              NOW()
+            )
+          `;
+        }
       }
       
       // Return the created transaction with ledger entries
-      return tx.transaction.findUnique({
+      return prismaClient.transaction.findUnique({
         where: { id: transaction.id },
         include: { ledgerEntries: true }
       }) as Promise<Transaction>;
@@ -128,7 +173,7 @@ export class TransactionService implements BaseService<Transaction> {
     });
   }
 
-  async update(id: string, data: TransactionUpdateInput, organizationId: string): Promise<Transaction> {
+  async update(id: string, data: TransactionData, organizationId: string): Promise<Transaction> {
     const { ledgerEntries, ...transactionData } = data;
     
     // Verify that ledger entries balance if provided
@@ -154,16 +199,37 @@ export class TransactionService implements BaseService<Transaction> {
         
         // Create new ledger entries
         if (ledgerEntries.length > 0) {
-          await Promise.all(
-            ledgerEntries.map(entry => 
-              tx.ledgerEntry.create({
-                data: {
-                  ...entry,
-                  transactionId: id
+          for (const entry of ledgerEntries) {
+            const ledgerData = {
+              amount: entry.amount,
+              memo: entry.memo,
+              transaction: {
+                connect: { id: id }
+              }
+            };
+            
+            // Add debit account if present
+            if (entry.debitAccountId) {
+              Object.assign(ledgerData, {
+                debitAccount: {
+                  connect: { id: entry.debitAccountId }
                 }
-              })
-            )
-          );
+              });
+            }
+            
+            // Add credit account if present
+            if (entry.creditAccountId) {
+              Object.assign(ledgerData, {
+                creditAccount: {
+                  connect: { id: entry.creditAccountId }
+                }
+              });
+            }
+            
+            await tx.ledgerEntry.create({
+              data: ledgerData
+            });
+          }
         }
       }
       

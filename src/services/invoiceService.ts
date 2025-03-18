@@ -1,39 +1,65 @@
 import { Invoice, InvoiceLineItem, InvoiceStatus, Prisma, Transaction } from '@prisma/client';
 import { BaseService, prisma } from './baseService';
 
-export interface InvoiceCreateInput extends Omit<Prisma.InvoiceCreateInput, 'organization'> {
-  lineItems: Prisma.InvoiceLineItemCreateInput[];
+// Define our own simplified interfaces for invoice creation
+export interface LineItemInput {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  amount: number;
+  taxRate?: number;
+  productId?: string;
+  taxCategoryId?: string;
 }
 
-export interface InvoiceUpdateInput extends Omit<Prisma.InvoiceUpdateInput, 'organization'> {
-  lineItems?: Prisma.InvoiceLineItemCreateInput[];
+export interface InvoiceData {
+  number: string;
+  date: Date | string;
+  dueDate: Date | string;
+  status?: InvoiceStatus;
+  subtotal: number;
+  taxAmount?: number;
+  total: number;
+  notes?: string | null;
+  terms?: string | null;
+  contactId: string;
+  lineItems?: LineItemInput[];
 }
 
 export class InvoiceService implements BaseService<Invoice> {
-  async create(data: InvoiceCreateInput, organizationId: string): Promise<Invoice> {
-    const { lineItems, ...invoiceData } = data;
+  async create(data: InvoiceData, organizationId: string): Promise<Invoice> {
+    const { lineItems, contactId, ...invoiceData } = data;
     
     return prisma.$transaction(async (tx) => {
-      // Create the invoice
+      // Create the invoice with proper relations using connect
       const invoice = await tx.invoice.create({
         data: {
           ...invoiceData,
-          organizationId
+          organization: {
+            connect: { id: organizationId }
+          },
+          contact: {
+            connect: { id: contactId }
+          }
         }
       });
       
-      // Add line items
+      // Add line items separately
       if (lineItems && lineItems.length > 0) {
-        await Promise.all(
-          lineItems.map(item => 
-            tx.invoiceLineItem.create({
-              data: {
-                ...item,
-                invoiceId: invoice.id
-              }
-            })
-          )
-        );
+        for (const item of lineItems) {
+          await tx.invoiceLineItem.create({
+            data: {
+              description: item.description,
+              quantity: item.quantity,
+              unitPrice: item.unitPrice,
+              amount: item.amount,
+              taxRate: item.taxRate || 0,
+              invoiceId: invoice.id,
+              ...(item.productId && { productId: item.productId }),
+              ...(item.taxCategoryId && { taxCategoryId: item.taxCategoryId })
+            }
+          });
+        }
       }
       
       // Return the created invoice with line items
@@ -74,16 +100,19 @@ export class InvoiceService implements BaseService<Invoice> {
     });
   }
 
-  async update(id: string, data: InvoiceUpdateInput, organizationId: string): Promise<Invoice> {
-    const { lineItems, ...invoiceData } = data;
+  async update(id: string, data: InvoiceData, organizationId: string): Promise<Invoice> {
+    const { lineItems, contactId, ...invoiceData } = data;
     
     return prisma.$transaction(async (tx) => {
-      // Update the invoice
+      // Update the invoice with proper relations if needed
+      const invoiceUpdateData: any = { ...invoiceData };
+      if (contactId) {
+        invoiceUpdateData.contact = { connect: { id: contactId } };
+      }
+      
       const invoice = await tx.invoice.update({
-        where: {
-          id,
-        },
-        data: invoiceData
+        where: { id },
+        data: invoiceUpdateData
       });
       
       // Handle line items if they're provided
@@ -95,16 +124,20 @@ export class InvoiceService implements BaseService<Invoice> {
         
         // Add new line items
         if (lineItems.length > 0) {
-          await Promise.all(
-            lineItems.map(item => 
-              tx.invoiceLineItem.create({
-                data: {
-                  ...item,
-                  invoiceId: id
-                }
-              })
-            )
-          );
+          for (const item of lineItems) {
+            await tx.invoiceLineItem.create({
+              data: {
+                description: item.description,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice,
+                amount: item.amount,
+                taxRate: item.taxRate || 0,
+                invoiceId: id,
+                ...(item.productId && { productId: item.productId }),
+                ...(item.taxCategoryId && { taxCategoryId: item.taxCategoryId })
+              }
+            });
+          }
         }
       }
       
@@ -156,7 +189,15 @@ export class InvoiceService implements BaseService<Invoice> {
   }
   
   async recordPayment(id: string, paymentAmount: number, organizationId: string): Promise<Invoice> {
-    const invoice = await this.findById(id, organizationId);
+    const invoice = await prisma.invoice.findFirst({
+      where: {
+        id,
+        organizationId
+      },
+      include: {
+        payments: true
+      }
+    });
     
     if (!invoice) {
       throw new Error('Invoice not found');
