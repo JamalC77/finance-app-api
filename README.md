@@ -164,4 +164,58 @@ Example:
 ```
 # In the frontend .env file
 NEXT_PUBLIC_API_URL=http://localhost:5000
-``` 
+```
+
+## CORS Configuration
+
+The API includes CORS middleware to handle cross-origin requests. The configuration supports both local development and production environments.
+
+### Local Development
+
+When running locally, the API will accept requests from:
+- http://localhost:3000
+- https://localhost:3000
+- http://127.0.0.1:3000
+
+### Production Deployment
+
+For production environments, you need to set the `FRONTEND_URL` environment variable to your frontend URL. This is especially important for Railway deployments.
+
+Example:
+```
+FRONTEND_URL=https://finance-app-production.vercel.app
+```
+
+The API will then include this URL in the list of allowed origins for CORS.
+
+## Railway Deployment
+
+To deploy to Railway with the correct CORS configuration:
+
+1. Make sure you have the Railway CLI installed:
+   ```
+   npm install -g @railway/cli
+   ```
+
+2. Use the provided deployment script:
+   ```
+   ./railway-deploy-script.sh
+   ```
+
+3. Or manually set the environment variables:
+   ```
+   railway login
+   railway variables set FRONTEND_URL=https://your-frontend-domain.com
+   railway up
+   ```
+
+4. Replace `https://your-frontend-domain.com` with your actual frontend URL.
+
+## Troubleshooting CORS Issues
+
+If you're experiencing CORS errors:
+
+1. Check that your frontend's origin matches one of the allowed origins in `src/index.ts`
+2. Verify that the `FRONTEND_URL` environment variable is set correctly in Railway
+3. Use the API Connectivity Test page at `/api-connectivity-test` in the frontend to debug connections
+4. Check browser console for specific CORS error messages 

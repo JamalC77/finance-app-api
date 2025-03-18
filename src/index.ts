@@ -33,13 +33,40 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 })); // Security headers with less strict CORS policy
 
-// Configure CORS to allow ALL origins temporarily for debugging
+// Define allowed origins
+const allowedOrigins = [
+  'http://localhost:3000',              // Local development
+  'https://localhost:3000',             // Local development with HTTPS
+  'http://127.0.0.1:3000',              // Local alternative
+  'https://finance-app-production.up.railway.app', // Railway frontend
+  'https://finance-app-production.vercel.app',     // Vercel deployment (if used)
+  process.env.FRONTEND_URL || '',      // Dynamic frontend URL from environment
+  '*'                                  // Fallback (remove in production)
+].filter(Boolean); // Remove empty strings
+
+// Configure CORS with specific origins
 app.use(cors({
-  origin: '*', // Allow all origins temporarily
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Check if the origin is allowed
+    if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+      return callback(null, true);
+    }
+    
+    // Log unauthorized attempts in development
+    if (isDev) {
+      console.log(`CORS blocked request from: ${origin}`);
+    }
+    
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
 app.use(express.json()); // Parse JSON bodies
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
 app.use(morgan(isDev ? 'dev' : 'combined')); // Logging
