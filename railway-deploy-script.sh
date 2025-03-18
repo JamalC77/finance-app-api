@@ -8,11 +8,14 @@ railway login
 
 # Set the FRONTEND_URL environment variable
 echo "Setting FRONTEND_URL environment variable..."
-railway variables set FRONTEND_URL=https://your-frontend-domain.com
+railway variables set FRONTEND_URL=https://thecfoline.com
 
 # Deploy the application
 echo "Deploying the application..."
 railway up
 
 echo "Deployment completed!"
-echo "Make sure to replace 'https://your-frontend-domain.com' with your actual frontend URL in Railway dashboard." 
+echo "The API is now configured to accept requests from:"
+echo "- https://thecfoline.com (production frontend)"
+echo "- http://localhost:3000 (local development)"
+echo "- https://cfo-line-api.up.railway.app (Railway API itself)" 
