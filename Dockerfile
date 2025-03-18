@@ -6,13 +6,14 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     python3 \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Debug: List current directory
 RUN ls -la
 
-# Copy scripts first
-COPY verify-prisma.js railway-entry.sh fix-types.js ./
+# Copy scripts and fallback files first
+COPY verify-prisma.js railway-entry.sh fix-types.js emergency-health.js index.js ./
 RUN chmod +x railway-entry.sh
 
 # Copy prisma schema directory explicitly
@@ -39,8 +40,11 @@ RUN node fix-types.js
 # Build the application with more permissive settings
 RUN npm run build:tsc -- --skipLibCheck --noEmit false --noEmitOnError false || true
 
+# Create a simple health endpoint file for direct use if needed
+RUN echo "console.log('Health check app ready');" >> /app/dist/health.js
+
 # Expose API port
 EXPOSE 5000
 
-# Start the server using the entry script
-CMD ["./railway-entry.sh"] 
+# Start the server using the simple index.js (which will attempt to load the real app)
+CMD ["node", "index.js"] 

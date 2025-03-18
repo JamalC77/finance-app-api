@@ -56,21 +56,20 @@ app.use('/api/categories', noCache, categoryRoutes);
 app.use('/api/quickbooks', noCache, quickbooksRoutes);
 app.use('/api/insights', noCache, insightsRoutes);
 
-// Health check endpoint
+// Health check endpoint - make sure this is properly implemented
 app.get('/health', (req, res) => {
+  console.log('Health check received');
   res.status(200).json({ status: 'OK', environment: env.NODE_ENV });
 });
 
 // Error handling middleware
 app.use(apiErrorHandler);
 
-// Start server if not being imported (for Vercel deployment)
-if (require.main === module) {
-  const PORT = env.PORT;
-  app.listen(PORT, () => {
-    console.log(`Server running in ${env.NODE_ENV} mode on port ${PORT}`);
-  });
-}
+// Start server
+const PORT = env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running in ${env.NODE_ENV} mode on port ${PORT}`);
+});
 
-// Export for Vercel serverless deployment
+// Export for serverless deployment
 export default app; 
