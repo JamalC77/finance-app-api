@@ -1,6 +1,6 @@
 [build]
 builder = "nixpacks"
-buildCommand = "npm install && npm run build"
+buildCommand = "npm install && npx prisma generate && npm run build"
 
 [deploy]
 startCommand = "npm start"
@@ -8,4 +8,5 @@ healthcheckPath = "/health"
 healthcheckTimeout = 100
 
 [nixpacks]
-python = "3.10" 
+python = "3.10"
+copyDirectories = ["prisma"] 

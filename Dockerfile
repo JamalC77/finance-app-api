@@ -16,6 +16,9 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
+# Copy the Prisma directory explicitly
+COPY prisma ./prisma/
+
 # Copy source code
 COPY . .
 
