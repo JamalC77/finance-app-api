@@ -2,34 +2,29 @@ FROM node:18-slim
 
 WORKDIR /app
 
-# Install Python and build tools
+# Install required system dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
-    python3-pip \
-    make \
-    g++ \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package files
-COPY package*.json ./
+COPY package.json package-lock.json ./
 
 # Install dependencies
-RUN npm install
+RUN npm ci --only=production
 
-# Copy the Prisma directory explicitly
-COPY prisma ./prisma/
-
-# Copy source code
+# Copy app source
 COPY . .
 
-# Generate Prisma client
+# Generate Prisma client first
 RUN npx prisma generate
 
 # Build the application
 RUN npm run build
 
-# Expose port
+# Expose API port
 EXPOSE 5000
 
-# Start the application
+# Start the server
 CMD ["npm", "start"] 
