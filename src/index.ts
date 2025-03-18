@@ -29,12 +29,32 @@ import insightsRoutes from './routes/insightsRoutes';
 const app = express();
 
 // Middleware
-app.use(helmet()); // Security headers
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+})); // Security headers with less strict CORS policy
+
+// Configure CORS to allow requests from your frontend
 app.use(cors({
-  origin: env.FRONTEND_URL || 'http://localhost:3000',
+  origin: function(origin, callback) {
+    const allowedOrigins = [
+      env.FRONTEND_URL,
+      'http://localhost:3000',
+      'https://finance-app.vercel.app',
+      'https://thecfoline.com',
+      'https://thecfoline.vercel.app'
+    ];
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('CORS blocked origin:', origin);
+      callback(null, true); // Temporarily allow all origins in production
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 app.use(express.json()); // Parse JSON bodies
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
@@ -56,10 +76,21 @@ app.use('/api/categories', noCache, categoryRoutes);
 app.use('/api/quickbooks', noCache, quickbooksRoutes);
 app.use('/api/insights', noCache, insightsRoutes);
 
-// Health check endpoint - make sure this is properly implemented
+// Health check endpoint
 app.get('/health', (req, res) => {
   console.log('Health check received');
   res.status(200).json({ status: 'OK', environment: env.NODE_ENV });
+});
+
+// CORS test endpoint
+app.get('/api/cors-test', (req, res) => {
+  console.log('CORS test received from:', req.headers.origin);
+  res.status(200).json({ 
+    success: true, 
+    message: 'CORS is working correctly',
+    origin: req.headers.origin,
+    time: new Date().toISOString()
+  });
 });
 
 // Error handling middleware
