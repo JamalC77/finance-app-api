@@ -38,8 +38,8 @@ const allowedOrigins = [
   'http://localhost:3000',              // Local development
   'https://localhost:3000',             // Local development with HTTPS
   'http://127.0.0.1:3000',              // Local alternative
-  'https://finance-app-production.up.railway.app', // Railway frontend
-  'https://finance-app-production.vercel.app',     // Vercel deployment (if used)
+  'https://thecfoline.com', // Railway frontend
+  'https://cfo-line-api.up.railway.app',     // Vercel deployment (if used)
   process.env.FRONTEND_URL || '',      // Dynamic frontend URL from environment
   '*'                                  // Fallback (remove in production)
 ].filter(Boolean); // Remove empty strings
