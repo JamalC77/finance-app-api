@@ -142,12 +142,16 @@ class QuickbooksDashboardController {
           return sum + receivedAmount;
         }, 0);
         
+        console.log(`💰 [QB CONTROLLER] Calculated current income: ${currentIncome}`);
+        
         // Previous month income
         const prevIncome = prevInvoices.reduce((sum, invoice) => {
           // Calculate what's actually been received (TotalAmt - Balance)
           const receivedAmount = parseFloat(invoice.TotalAmt || '0') - parseFloat(invoice.Balance || '0');
           return sum + receivedAmount;
         }, 0);
+        
+        console.log(`💰 [QB CONTROLLER] Calculated previous income: ${prevIncome}`);
         
         // Calculate income change percentage
         const incomeChangePercentage = prevIncome === 0 
@@ -192,10 +196,10 @@ class QuickbooksDashboardController {
           const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
           const formattedMonth = monthNames[monthDate.getMonth()];
           
-          // Filter invoices for this month
+          // Filter invoices for this month - removed "Balance === 0" filter to count all income
           const monthInvoices = sixMonthInvoices.filter(invoice => {
             const txnDate = new Date(invoice.TxnDate);
-            return txnDate >= monthStart && txnDate <= monthEnd && invoice.Balance === 0;
+            return txnDate >= monthStart && txnDate <= monthEnd;
           });
           
           // Filter expenses for this month
@@ -204,9 +208,11 @@ class QuickbooksDashboardController {
             return txnDate >= monthStart && txnDate <= monthEnd;
           });
           
-          // Calculate month totals
-          const monthIncome = monthInvoices.reduce((sum, invoice) => 
-            sum + parseFloat(invoice.TotalAmt || '0'), 0);
+          // Calculate month totals - properly calculate received amounts
+          const monthIncome = monthInvoices.reduce((sum, invoice) => {
+            const receivedAmount = parseFloat(invoice.TotalAmt || '0') - parseFloat(invoice.Balance || '0');
+            return sum + receivedAmount;
+          }, 0);
           
           const monthExpensesTotal = monthExpenses.reduce((sum, expense) => 
             sum + parseFloat(expense.TotalAmt || '0'), 0);
@@ -223,8 +229,9 @@ class QuickbooksDashboardController {
         console.log(`👤 [QB CONTROLLER] Building top customer data...`);
         const customerRevenue = new Map();
         
+        // Removed filter for Balance === 0 to include all customers with paid or partially paid invoices
         currentInvoices.forEach(invoice => {
-          if (invoice.Balance === 0 && invoice.CustomerRef) {
+          if (invoice.CustomerRef) {
             const customerId = invoice.CustomerRef.value;
             
             if (!customerRevenue.has(customerId)) {
@@ -237,7 +244,9 @@ class QuickbooksDashboardController {
             }
             
             const customerData = customerRevenue.get(customerId);
-            customerData.revenue += parseFloat(invoice.TotalAmt || '0');
+            // Only count the received amount (not the total invoice amount)
+            const receivedAmount = parseFloat(invoice.TotalAmt || '0') - parseFloat(invoice.Balance || '0');
+            customerData.revenue += receivedAmount;
           }
         });
         
@@ -273,20 +282,24 @@ class QuickbooksDashboardController {
         // Generate recent activity based on invoices and expenses
         console.log(`🔄 [QB CONTROLLER] Building recent activity data...`);
         const recentActivity = [
-          // Paid invoices (most recent)
+          // Include partially paid invoices too, not just fully paid ones
           ...currentInvoices
-            .filter(invoice => invoice.Balance === 0)
+            .filter(invoice => parseFloat(invoice.TotalAmt || '0') - parseFloat(invoice.Balance || '0') > 0)
             .map(invoice => {
               const customerName = invoice.CustomerRef 
                 ? (customers.find(c => c.Id === invoice.CustomerRef.value)?.DisplayName || 'Customer') 
                 : 'Customer';
               
+              // Use the received amount not the total
+              const receivedAmount = parseFloat(invoice.TotalAmt || '0') - parseFloat(invoice.Balance || '0');
+              const status = invoice.Balance === 0 ? 'fully' : 'partially';
+              
               return {
                 id: invoice.Id,
                 type: 'INVOICE_PAID',
-                description: `Invoice #${invoice.DocNumber || ''} paid by ${customerName}`,
+                description: `Invoice #${invoice.DocNumber || ''} ${status} paid by ${customerName}`,
                 date: new Date(invoice.TxnDate),
-                amount: parseFloat(invoice.TotalAmt || '0')
+                amount: receivedAmount
               };
             }),
           
