@@ -135,15 +135,19 @@ class QuickbooksDashboardController {
         // Total cash balance from bank accounts
         const cashBalance = cashAccounts.reduce((sum, account) => sum + parseFloat(account.CurrentBalance || '0'), 0);
         
-        // Current month income (total of paid invoices)
-        const currentIncome = currentInvoices
-          .filter(invoice => invoice.Balance === 0) // Paid invoices have zero balance
-          .reduce((sum, invoice) => sum + parseFloat(invoice.TotalAmt || '0'), 0);
+        // Current month income (total of received money)
+        const currentIncome = currentInvoices.reduce((sum, invoice) => {
+          // Calculate what's actually been received (TotalAmt - Balance)
+          const receivedAmount = parseFloat(invoice.TotalAmt || '0') - parseFloat(invoice.Balance || '0');
+          return sum + receivedAmount;
+        }, 0);
         
         // Previous month income
-        const prevIncome = prevInvoices
-          .filter(invoice => invoice.Balance === 0)
-          .reduce((sum, invoice) => sum + parseFloat(invoice.TotalAmt || '0'), 0);
+        const prevIncome = prevInvoices.reduce((sum, invoice) => {
+          // Calculate what's actually been received (TotalAmt - Balance)
+          const receivedAmount = parseFloat(invoice.TotalAmt || '0') - parseFloat(invoice.Balance || '0');
+          return sum + receivedAmount;
+        }, 0);
         
         // Calculate income change percentage
         const incomeChangePercentage = prevIncome === 0 
@@ -215,7 +219,7 @@ class QuickbooksDashboardController {
           });
         }
         
-        // Calculate top customers based on paid invoices
+        // Calculate top customers based on received money
         console.log(`👤 [QB CONTROLLER] Building top customer data...`);
         const customerRevenue = new Map();
         
