@@ -26,6 +26,7 @@ model Organization {
   accounts                 Account[]
   bankConnections          BankConnection[]
   contacts                 Contact[]
+  directExportLogs         DirectExportLog[]
   expenses                 Expense[]
   financialInsights        FinancialInsight[]
   invoices                 Invoice[]
@@ -36,7 +37,6 @@ model Organization {
   taxCategories            TaxCategory[]
   transactions             Transaction[]
   users                    User[]
-  directExportLogs         DirectExportLog[]
 
   @@map("organizations")
 }
@@ -54,6 +54,7 @@ model User {
   organizationId String
   metadata       String?
   organization   Organization @relation(fields: [organizationId], references: [id])
+  resetTokens    PasswordResetToken[]
 
   @@map("users")
 }
@@ -429,25 +430,37 @@ model FinancialInsight {
 }
 
 model DirectExportLog {
-  id                String    @id @default(uuid())
+  id                String       @id @default(uuid())
   organizationId    String
-  status            String    // 'IN_PROGRESS', 'COMPLETED', 'FAILED'
+  status            String
   startedAt         DateTime
   completedAt       DateTime?
-  entityType        String?   // 'accounts', 'transactions', 'invoices', 'contacts', or null for all
+  entityType        String?
   accountsCount     Int?
   transactionsCount Int?
   invoicesCount     Int?
   contactsCount     Int?
   errorMessage      String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
   organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  
+
   @@index([organizationId])
   @@index([status])
   @@map("direct_export_logs")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  usedAt    DateTime?
+
+  @@index([token])
+  @@map("password_reset_tokens")
 }
 
 enum UserRole {
