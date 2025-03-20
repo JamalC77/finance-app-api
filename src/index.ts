@@ -89,16 +89,6 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', environment: env.NODE_ENV });
 });
 
-// CORS test endpoint
-app.get('/api/cors-test', (req, res) => {
-  console.log('CORS test received from:', req.headers.origin);
-  res.status(200).json({ 
-    success: true, 
-    message: 'CORS is working correctly',
-    origin: req.headers.origin,
-    time: new Date().toISOString()
-  });
-});
 
 // Error handling middleware
 app.use(apiErrorHandler);
