@@ -53,6 +53,10 @@ model User {
   isActive       Boolean      @default(true)
   organizationId String
   metadata       String?
+  planType       PlanType     @default(FREE)
+  planExpiresAt  DateTime?
+  stripeCustomerId String?
+  stripeSubscriptionId String?
   organization   Organization @relation(fields: [organizationId], references: [id])
   resetTokens    PasswordResetToken[]
 
@@ -561,4 +565,11 @@ enum InsightType {
   TAX
   BUDGET
   GENERAL
+}
+
+enum PlanType {
+  FREE
+  BASIC
+  PREMIUM
+  ENTERPRISE
 }
