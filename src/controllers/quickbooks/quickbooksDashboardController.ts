@@ -1,1023 +1,685 @@
 import { prisma } from "../../utils/prisma";
 import { ApiError } from "../../utils/errors";
 import { quickbooksApiClient } from "../../services/quickbooks/quickbooksApiClient";
-import { quickbooksAuthService } from "../../services/quickbooks/quickbooksAuthService";
 
 /**
- * Controller for fetching dashboard data directly from QuickBooks
+ * Controller for fetching a cash-based dashboard from QuickBooks.
+ * Demonstrates a single multi-column P&L report for multiple months.
  */
 class QuickbooksDashboardController {
   /**
-   * Get dashboard data from QuickBooks
-   *
-   * @param organizationId The organization ID
-   * @returns Dashboard data from QuickBooks
+   * Main entry point: gets the dashboard data in cash basis using multi-month P&L.
    */
   async getDashboardData(organizationId: string) {
     try {
-      // Verify connection exists and is active
-      console.log(`🔍 [QB CONTROLLER] Checking QuickBooks connection for organization: ${organizationId}`);
+      // 1. Ensure we have an active QBO connection
       const connection = await prisma.quickbooksConnection.findUnique({
         where: { organizationId },
       });
-
       if (!connection || !connection.isActive) {
-        console.log(`❌ [QB CONTROLLER] No active connection found for organization: ${organizationId}`);
         throw new ApiError(400, "No active QuickBooks connection");
       }
-
-      console.log(`✅ [QB CONTROLLER] Found active connection, realmId: ${connection.realmId}`);
       const realmId = connection.realmId;
 
-      // Set up date ranges for queries
+      // 2. Calculate relevant date ranges
       const now = new Date();
-      const currentMonth = now.getMonth();
-      const currentYear = now.getFullYear();
+      const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-      // Start date is first day of current month
-      const startDate = new Date(currentYear, currentMonth, 1);
+      const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
 
-      // End date is last day of current month
-      const endDate = new Date(currentYear, currentMonth + 1, 0);
-
-      // Get previous month date range for comparison
-      const prevMonthStart = new Date(currentYear, currentMonth - 1, 1);
-      const prevMonthEnd = new Date(currentYear, currentMonth, 0);
-
-      // Six months ago for cash flow
       const sixMonthsAgo = new Date();
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
       sixMonthsAgo.setDate(1);
 
-      // Format dates for QB queries
-      const formatQBDate = (date: Date) => {
-        return date.toISOString().split("T")[0];
+      // Format function for QBO
+      const formatQBDate = (date: Date) => date.toISOString().split("T")[0];
+
+      // 3. Fetch multi-column P&L for the last 6 months (cash basis)
+      //    This single call should return multiple columns, one per month + a "Total" column.
+      const plParams = {
+        start_date: formatQBDate(sixMonthsAgo), // e.g. 6 months back
+        end_date: formatQBDate(currentMonthEnd), // up to current month end
+        accounting_method: "Cash",
+        minorversion: "65",
+
+        // Key param: columns by Month. 
+        // In some QBO docs, you may see `column=Month` or `columns=Month` or `displaycolumns=month`.
+        // Adjust as needed if the QuickBooks library requires a different key name.
+        column: "Month", 
       };
 
-      console.log(`📅 [QB CONTROLLER] Query date ranges prepared: 
-        Current: ${formatQBDate(startDate)} to ${formatQBDate(endDate)}
-        Previous: ${formatQBDate(prevMonthStart)} to ${formatQBDate(prevMonthEnd)}
-        Six months ago: ${formatQBDate(sixMonthsAgo)}`);
-
-      // Fetch relevant data from QuickBooks
-      // 1. Cash Balance - using BalanceSheet report for more accuracy
-      try {
-        console.log(`💼 [QB CONTROLLER] Fetching BalanceSheet report for cash balance...`);
-
-        const balanceSheetParams = {
-          start_date: formatQBDate(startDate),
-          end_date: formatQBDate(endDate),
-          accounting_method: "Accrual",
-          minorversion: "65",
-        };
-
-        let balanceSheetReport;
-        try {
-          balanceSheetReport = await quickbooksApiClient.getReport(organizationId, realmId, "BalanceSheet", balanceSheetParams);
-
-          console.log(`💰 [QB CONTROLLER] BalanceSheet report fetched successfully.`);
-          // Debug balance sheet structure
-          console.log(`💰 [QB DEBUG] BalanceSheet structure:`, JSON.stringify(balanceSheetReport).substring(0, 500) + "...");
-        } catch (err) {
-          console.warn(`⚠️ [QB CONTROLLER] Could not fetch BalanceSheet report, using account queries as fallback.`, err);
-          balanceSheetReport = null;
-        }
-
-        // Extract cash balance from balance sheet if available
-        let cashBalance = 0;
-        if (balanceSheetReport && balanceSheetReport.Rows && balanceSheetReport.Rows.Row) {
-          const rows = balanceSheetReport.Rows.Row;
-
-          // Look for Assets section
-          const assetsSection = rows.find(
-            (row) => row.group === "Assets" || (row.Header && row.Header.ColData && row.Header.ColData[0].value === "Assets")
-          );
-
-          if (assetsSection && assetsSection.Rows && assetsSection.Rows.Row) {
-            // Find Current Assets section
-            const currentAssetsSection = assetsSection.Rows.Row.find(
-              (row) => row.group === "CurrentAssets" || (row.Header && row.Header.ColData && row.Header.ColData[0].value === "Current Assets")
-            );
-
-            if (currentAssetsSection && currentAssetsSection.Rows && currentAssetsSection.Rows.Row) {
-              // Look for Bank Accounts or Cash accounts
-              const bankSection = currentAssetsSection.Rows.Row.find(
-                (row) => row.group === "BankAccounts" || (row.Header && row.Header.ColData && row.Header.ColData[0].value === "Bank Accounts")
-              );
-
-              if (bankSection && bankSection.Summary && bankSection.Summary.ColData) {
-                const bankValueCol = bankSection.Summary.ColData.find((col) => col.value && !isNaN(parseFloat(col.value)));
-                if (bankValueCol) {
-                  cashBalance = parseFloat(bankValueCol.value);
-                  console.log(`💰 [QB CONTROLLER] Found cash balance from BalanceSheet: ${cashBalance}`);
-                }
-              }
-
-              // If not found via BankAccounts structure, try direct cash account rows
-              if (cashBalance === 0) {
-                // Manually look for cash/bank accounts at current assets level
-                currentAssetsSection.Rows.Row.forEach((row) => {
-                  if (row.ColData && row.ColData.length > 1) {
-                    const accountName = row.ColData[0].value || "";
-                    if (accountName.toLowerCase().includes("cash") || accountName.toLowerCase().includes("bank")) {
-                      const accountBalance = parseFloat(row.ColData[1].value || "0");
-                      if (!isNaN(accountBalance)) {
-                        cashBalance += accountBalance;
-                        console.log(`💰 [QB CONTROLLER] Adding cash account '${accountName}': ${accountBalance}`);
-                      }
-                    }
-                  }
-                });
-              }
-            }
-          }
-        }
-
-        // If we couldn't extract from the balance sheet, fallback to account queries
-        if (cashBalance === 0) {
-          console.log(`💼 [QB CONTROLLER] Using account queries fallback for cash balance...`);
-          // According to QuickBooks API docs, use single quotes for string literals
-          const cashAccountsQuery = "SELECT * FROM Account WHERE AccountType = 'Bank'";
-          const cashAccountsResponse = await quickbooksApiClient.query(organizationId, realmId, cashAccountsQuery);
-          const cashAccounts = cashAccountsResponse.QueryResponse.Account || [];
-          console.log(`💰 [QB CONTROLLER] Found ${cashAccounts.length} cash accounts`);
-
-          // If successful, try to get other current assets in a separate query
-          if (cashAccounts.length >= 0) {
-            console.log(`💼 [QB CONTROLLER] Querying other current assets...`);
-            const otherAssetsQuery = "SELECT * FROM Account WHERE AccountType = 'Other Current Asset'";
-            const otherAssetsResponse = await quickbooksApiClient.query(organizationId, realmId, otherAssetsQuery);
-            const otherAssets = otherAssetsResponse.QueryResponse.Account || [];
-            console.log(`💰 [QB CONTROLLER] Found ${otherAssets.length} other current assets`);
-
-            // Combine the results
-            cashAccounts.push(...otherAssets);
-          }
-
-          // Calculate cash balance from accounts
-          cashBalance = cashAccounts.reduce((sum, account) => sum + parseFloat(account.CurrentBalance || "0"), 0);
-        }
-
-        // Query for Income accounts
-        // NOTE: This is often incomplete if you rely on the 'CurrentBalance' alone for tracking total recognized income.
-        //       The better approach is either to:
-        //       1) Use the ProfitAndLoss report for a date range
-        //       2) Also consider sub-types like 'Discount Income', 'Unapplied Cash Payment Income', etc.
-        console.log(`💼 [QB CONTROLLER] Querying Income accounts...`);
-        const incomeAccountsQuery = "SELECT * FROM Account WHERE AccountType IN ('Income', 'Other Income')";
-        const incomeAccountsResponse = await quickbooksApiClient.query(organizationId, realmId, incomeAccountsQuery);
-        const incomeAccounts = incomeAccountsResponse.QueryResponse.Account || [];
-        console.log(`💰 [QB CONTROLLER] Found ${incomeAccounts.length} income accounts`);
-
-        // 2. Current month invoices
-        console.log(`📄 [QB CONTROLLER] Querying current month invoices...`);
-        const currentInvoicesQuery = `SELECT * FROM Invoice WHERE TxnDate >= '${formatQBDate(startDate)}' AND TxnDate <= '${formatQBDate(endDate)}'`;
-        const currentInvoicesResponse = await quickbooksApiClient.query(organizationId, realmId, currentInvoicesQuery);
-        const currentInvoices = currentInvoicesResponse.QueryResponse.Invoice || [];
-        console.log(`📊 [QB CONTROLLER] Found ${currentInvoices.length} current month invoices`);
-
-        // 3. Previous month invoices
-        console.log(`📄 [QB CONTROLLER] Querying previous month invoices...`);
-        const prevInvoicesQuery = `SELECT * FROM Invoice WHERE TxnDate >= '${formatQBDate(prevMonthStart)}' AND TxnDate <= '${formatQBDate(
-          prevMonthEnd
-        )}'`;
-        const prevInvoicesResponse = await quickbooksApiClient.query(organizationId, realmId, prevInvoicesQuery);
-        const prevInvoices = prevInvoicesResponse.QueryResponse.Invoice || [];
-        console.log(`📊 [QB CONTROLLER] Found ${prevInvoices.length} previous month invoices`);
-
-        // 4. Current month expenses (purchases)
-        console.log(`💸 [QB CONTROLLER] Querying current month expenses...`);
-        const currentExpensesQuery = `SELECT * FROM Purchase WHERE TxnDate >= '${formatQBDate(startDate)}' AND TxnDate <= '${formatQBDate(endDate)}'`;
-        const currentExpensesResponse = await quickbooksApiClient.query(organizationId, realmId, currentExpensesQuery);
-        const currentExpenses = currentExpensesResponse.QueryResponse.Purchase || [];
-        console.log(`📊 [QB CONTROLLER] Found ${currentExpenses.length} current month expenses`);
-
-        // 5. Previous month expenses
-        console.log(`💸 [QB CONTROLLER] Querying previous month expenses...`);
-        const prevExpensesQuery = `SELECT * FROM Purchase WHERE TxnDate >= '${formatQBDate(prevMonthStart)}' AND TxnDate <= '${formatQBDate(
-          prevMonthEnd
-        )}'`;
-        const prevExpensesResponse = await quickbooksApiClient.query(organizationId, realmId, prevExpensesQuery);
-        const prevExpenses = prevExpensesResponse.QueryResponse.Purchase || [];
-        console.log(`📊 [QB CONTROLLER] Found ${prevExpenses.length} previous month expenses`);
-
-        // 6. Cash flow data (last 6 months) - Invoices + Purchases
-        console.log(`📈 [QB CONTROLLER] Querying six month invoices...`);
-        const sixMonthInvoicesQuery = `SELECT * FROM Invoice WHERE TxnDate >= '${formatQBDate(sixMonthsAgo)}' AND TxnDate <= '${formatQBDate(
-          endDate
-        )}'`;
-        const sixMonthInvoicesResponse = await quickbooksApiClient.query(organizationId, realmId, sixMonthInvoicesQuery);
-        const sixMonthInvoices = sixMonthInvoicesResponse.QueryResponse.Invoice || [];
-        console.log(`📊 [QB CONTROLLER] Found ${sixMonthInvoices.length} six month invoices`);
-
-        console.log(`📉 [QB CONTROLLER] Querying six month expenses...`);
-        const sixMonthExpensesQuery = `SELECT * FROM Purchase WHERE TxnDate >= '${formatQBDate(sixMonthsAgo)}' AND TxnDate <= '${formatQBDate(
-          endDate
-        )}'`;
-        const sixMonthExpensesResponse = await quickbooksApiClient.query(organizationId, realmId, sixMonthExpensesQuery);
-        const sixMonthExpenses = sixMonthExpensesResponse.QueryResponse.Purchase || [];
-        console.log(`📊 [QB CONTROLLER] Found ${sixMonthExpenses.length} six month expenses`);
-
-        // 7. Customers for top customers
-        console.log(`👥 [QB CONTROLLER] Querying customers...`);
-        const customersQuery = `SELECT * FROM Customer`;
-        const customersResponse = await quickbooksApiClient.query(organizationId, realmId, customersQuery);
-        const customers = customersResponse.QueryResponse.Customer || [];
-        console.log(`📊 [QB CONTROLLER] Found ${customers.length} customers`);
-
-        /**
-         * -----------------------------------------------------------------
-         * NEW/CHANGED: Optionally fetch SalesReceipts for the current month
-         * (they are sometimes used instead of Invoices for immediate sales).
-         * -----------------------------------------------------------------
-         */
-        console.log(`📄 [QB CONTROLLER] Querying current month sales receipts...`);
-        const currentSalesReceiptsQuery = `SELECT * FROM SalesReceipt WHERE TxnDate >= '${formatQBDate(startDate)}' AND TxnDate <= '${formatQBDate(
-          endDate
-        )}'`;
-        const currentSalesReceiptsResponse = await quickbooksApiClient.query(organizationId, realmId, currentSalesReceiptsQuery);
-        const currentSalesReceipts = currentSalesReceiptsResponse.QueryResponse.SalesReceipt || [];
-        console.log(`📊 [QB CONTROLLER] Found ${currentSalesReceipts.length} current month sales receipts`);
-
-        /**
-         * -----------------------------------------------------------------
-         * NEW/CHANGED: Use the ProfitAndLoss report for the current month
-         * as an example of how to get a broader summary for 'Income'.
-         * (Less manual summation + includes SalesReceipts, Invoices, etc.)
-         * -----------------------------------------------------------------
-         */
-        console.log(`📊 [QB CONTROLLER] Querying ProfitAndLoss report for the current month...`);
-
-        // Use the new getReport method with proper parameters
-        let profitAndLossReport;
-        try {
-          const reportParams = {
-            start_date: formatQBDate(startDate),
-            end_date: formatQBDate(endDate),
-            accounting_method: "Accrual",
-            minorversion: "65",
-          };
-
-          profitAndLossReport = await quickbooksApiClient.getReport(organizationId, realmId, "ProfitAndLoss", reportParams);
-
-          console.log(`📈 [QB CONTROLLER] ProfitAndLoss report fetched successfully.`);
-        } catch (err) {
-          console.warn(`⚠️ [QB CONTROLLER] Could not fetch ProfitAndLoss report.`, err);
-          // This is optional, so we won't throw an error if it fails.
-          profitAndLossReport = null;
-        }
-
-        // Also fetch previous month's P&L report for better comparison
-        let prevMonthPLReport;
-        try {
-          const prevReportParams = {
-            start_date: formatQBDate(prevMonthStart),
-            end_date: formatQBDate(prevMonthEnd),
-            accounting_method: "Accrual",
-            minorversion: "65",
-          };
-
-          prevMonthPLReport = await quickbooksApiClient.getReport(organizationId, realmId, "ProfitAndLoss", prevReportParams);
-
-          console.log(`📈 [QB CONTROLLER] Previous month ProfitAndLoss report fetched successfully.`);
-        } catch (err) {
-          console.warn(`⚠️ [QB CONTROLLER] Could not fetch previous month ProfitAndLoss report.`, err);
-          prevMonthPLReport = null;
-        }
-
-        // Calculate dashboard metrics
-        console.log(`🧮 [QB CONTROLLER] Calculating dashboard metrics...`);
-
-        // Get income from Income accounts (still used as a fallback measure)
-        const incomeFromAccounts = incomeAccounts.reduce((sum, account) => {
-          const accountBalance = parseFloat(account.CurrentBalance || "0");
-          // Income accounts in QuickBooks are often negative; take absolute value.
-          return sum + Math.abs(accountBalance);
-        }, 0);
-
-        console.log(`💰 [QB CONTROLLER] Calculated fallback income from accounts: ${incomeFromAccounts}`);
-
-        // Current month income from invoices
-        const currentIncomeFromInvoices = currentInvoices.reduce((sum, invoice) => {
-          const receivedAmount = parseFloat(invoice.TotalAmt || "0") - parseFloat(invoice.Balance || "0");
-          return sum + receivedAmount;
-        }, 0);
-
-        // Current month income from sales receipts
-        const currentIncomeFromSalesReceipts = currentSalesReceipts.reduce((sum, sr) => {
-          // For a sales receipt, total amount is typically all recognized at once
-          return sum + parseFloat(sr.TotalAmt || "0");
-        }, 0);
-
-        // Combine them
-        const currentIncomeFromTxn = currentIncomeFromInvoices + currentIncomeFromSalesReceipts;
-
-        // If we have the P&L report data, use it. Otherwise, fallback on the manual sum.
-        let plIncome = 0;
-        let plExpenses = 0;
-        let plProfitLoss = 0;
-
-        if (profitAndLossReport && profitAndLossReport.Rows) {
-          try {
-            console.log(`📊 [QB CONTROLLER] Parsing P&L report data...`);
-            console.log(`📊 [QB DEBUG] P&L report structure:`, JSON.stringify(profitAndLossReport).substring(0, 500) + "...");
-
-            // Extract the total income, expenses, and net income from the P&L report
-            const rows = profitAndLossReport.Rows.Row || [];
-
-            // Debug full report structure to understand the data format
-            rows.forEach((row, index) => {
-              console.log(
-                `📊 [QB DEBUG] Row ${index}:`,
-                JSON.stringify({
-                  group: row.group,
-                  header: row.Header?.ColData?.[0]?.value,
-                  summary: row.Summary?.ColData?.[1]?.value,
-                })
-              );
-            });
-
-            // The P&L report structure typically contains a summary row for Income, Expenses, and Net Income
-            // In QuickBooks, this is usually structured with specific sections
-
-            // Look for direct Net Income (profit/loss) first
-            const netIncomeRow = rows.find(
-              (row) =>
-                row.group === "NetIncome" ||
-                row.type === "NetIncome" ||
-                (row.Header && row.Header.ColData && row.Header.ColData[0]?.value?.includes("Net Income"))
-            );
-
-            if (netIncomeRow && netIncomeRow.Summary && netIncomeRow.Summary.ColData) {
-              // The value is typically in the second column (index 1)
-              const valueCol = netIncomeRow.Summary.ColData.find((col) => col.value && !isNaN(parseFloat(col.value)));
-              if (valueCol) {
-                plProfitLoss = parseFloat(valueCol.value);
-                console.log(`📊 [QB CONTROLLER] Found Net Income directly: ${plProfitLoss}`);
-              }
-            }
-
-            // Look for Total Income section
-            const totalIncomeRow = rows.find(
-              (row) =>
-                row.group === "Income" ||
-                row.type === "Income" ||
-                (row.Header && row.Header.ColData && row.Header.ColData[0]?.value?.includes("Total Income"))
-            );
-
-            if (totalIncomeRow && totalIncomeRow.Summary && totalIncomeRow.Summary.ColData) {
-              const valueCol = totalIncomeRow.Summary.ColData.find((col) => col.value && !isNaN(parseFloat(col.value)));
-              if (valueCol) {
-                plIncome = parseFloat(valueCol.value);
-                console.log(`📊 [QB CONTROLLER] Found Total Income directly: ${plIncome}`);
-              }
-            }
-
-            // Look for Total Expenses section
-            const totalExpensesRow = rows.find(
-              (row) =>
-                row.group === "Expenses" ||
-                row.type === "Expenses" ||
-                (row.Header && row.Header.ColData && row.Header.ColData[0]?.value?.includes("Total Expenses"))
-            );
-
-            if (totalExpensesRow && totalExpensesRow.Summary && totalExpensesRow.Summary.ColData) {
-              const valueCol = totalExpensesRow.Summary.ColData.find((col) => col.value && !isNaN(parseFloat(col.value)));
-              if (valueCol) {
-                plExpenses = parseFloat(valueCol.value);
-                console.log(`📊 [QB CONTROLLER] Found Total Expenses directly: ${plExpenses}`);
-              }
-            }
-
-            // If we didn't find net income but have both income and expenses, calculate it
-            if (plProfitLoss === 0 && plIncome > 0 && plExpenses > 0) {
-              plProfitLoss = plIncome - plExpenses;
-              console.log(`📊 [QB CONTROLLER] Calculated Net Income: ${plProfitLoss}`);
-            }
-
-            // Validate that our numbers add up
-            console.log(`📊 [QB CONTROLLER] P&L Validation:
-              Income: ${plIncome}
-              Expenses: ${plExpenses}
-              Profit/Loss: ${plProfitLoss}
-              Income - Expenses = ${plIncome - plExpenses}`);
-
-            // Sanity check - if the difference is significant, log a warning
-            const calculatedProfit = plIncome - plExpenses;
-            if (Math.abs(calculatedProfit - plProfitLoss) > 1) {
-              console.warn(`⚠️ [QB CONTROLLER] Profit calculation discrepancy: 
-                P&L report profit: ${plProfitLoss}
-                Calculated profit: ${calculatedProfit}
-                Difference: ${plProfitLoss - calculatedProfit}`);
-            }
-          } catch (parseError) {
-            console.warn(`⚠️ [QB CONTROLLER] Could not parse P&L rows. Fallback to manual sum.`, parseError);
-          }
-        }
-
-        // Do the same for previous month P&L report if available
-        let prevPlIncome = 0;
-        let prevPlExpenses = 0;
-        let prevPlProfitLoss = 0;
-
-        if (prevMonthPLReport && prevMonthPLReport.Rows) {
-          try {
-            console.log(`📊 [QB CONTROLLER] Parsing previous month P&L report data...`);
-
-            const rows = prevMonthPLReport.Rows.Row || [];
-
-            for (const row of rows) {
-              if (row.Summary && row.Summary.ColData) {
-                // Income section
-                if (row.group === "Income" || row.header?.label === "Income") {
-                  for (const colData of row.Summary.ColData) {
-                    if (colData.value && !isNaN(parseFloat(colData.value))) {
-                      prevPlIncome = parseFloat(colData.value);
-                      console.log(`💰 [QB CONTROLLER] Found previous month Income from P&L: ${prevPlIncome}`);
-                      break;
-                    }
-                  }
-                }
-                // Expenses section
-                else if (row.group === "Expenses" || row.header?.label === "Expenses") {
-                  for (const colData of row.Summary.ColData) {
-                    if (colData.value && !isNaN(parseFloat(colData.value))) {
-                      prevPlExpenses = parseFloat(colData.value);
-                      console.log(`💸 [QB CONTROLLER] Found previous month Expenses from P&L: ${prevPlExpenses}`);
-                      break;
-                    }
-                  }
-                }
-                // Net Income section
-                else if (row.group === "NetIncome" || row.header?.label?.includes("Net Income")) {
-                  for (const colData of row.Summary.ColData) {
-                    if (colData.value && !isNaN(parseFloat(colData.value))) {
-                      prevPlProfitLoss = parseFloat(colData.value);
-                      console.log(`📊 [QB CONTROLLER] Found previous month Net Income from P&L: ${prevPlProfitLoss}`);
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-
-            // Calculate if not found directly
-            if (prevPlProfitLoss === 0 && (prevPlIncome > 0 || prevPlExpenses > 0)) {
-              prevPlProfitLoss = prevPlIncome - prevPlExpenses;
-              console.log(`🧮 [QB CONTROLLER] Calculated previous month Net Income: ${prevPlProfitLoss}`);
-            }
-          } catch (parseError) {
-            console.warn(`⚠️ [QB CONTROLLER] Could not parse previous month P&L rows.`, parseError);
-          }
-        }
-
-        // Calculate previous month income from invoices as fallback
-        const prevIncomeFromInvoices = prevInvoices.reduce((sum, invoice) => {
-          const receivedAmount = parseFloat(invoice.TotalAmt || "0") - parseFloat(invoice.Balance || "0");
-          return sum + receivedAmount;
-        }, 0);
-
-        console.log(`💰 [QB CONTROLLER] Previous month income from invoices (fallback): ${prevIncomeFromInvoices}`);
-
-        // Final "currentIncome" used in the dashboard
-        // If the P&L is available and has data, use that. Otherwise, combine the manual approach.
-        console.log(`💰 [QB CONTROLLER] Selecting best source for financial metrics...`);
-
-        // For current month metrics
-        const currentIncome = plIncome > 0 ? plIncome : currentIncomeFromTxn > 0 ? currentIncomeFromTxn : incomeFromAccounts;
-
-        const currentExpensesTotal =
-          plExpenses > 0 ? plExpenses : currentExpenses.reduce((sum, expense) => sum + parseFloat(expense.TotalAmt || "0"), 0);
-
-        const currentProfitLoss = plProfitLoss !== 0 ? plProfitLoss : currentIncome - currentExpensesTotal;
-
-        console.log(`💰 [QB CONTROLLER] Using current month financials:
-          Income: ${currentIncome}
-          Expenses: ${currentExpensesTotal}
-          Profit/Loss: ${currentProfitLoss}`);
-
-        // For previous month metrics
-        const prevIncome = prevPlIncome > 0 ? prevPlIncome : prevIncomeFromInvoices > 0 ? prevIncomeFromInvoices : incomeFromAccounts / 12; // Rough fallback
-
-        const prevExpensesTotal =
-          prevPlExpenses > 0 ? prevPlExpenses : prevExpenses.reduce((sum, expense) => sum + parseFloat(expense.TotalAmt || "0"), 0);
-
-        const prevProfitLoss = prevPlProfitLoss !== 0 ? prevPlProfitLoss : prevIncome - prevExpensesTotal;
-
-        console.log(`💰 [QB CONTROLLER] Using previous month financials:
-          Income: ${prevIncome}
-          Expenses: ${prevExpensesTotal}
-          Profit/Loss: ${prevProfitLoss}`);
-
-        // Calculate income change percentage
-        const incomeChangePercentage = prevIncome === 0 ? 100 : Math.round(((currentIncome - prevIncome) / prevIncome) * 100);
-
-        // Calculate expenses change percentage
-        const expensesChangePercentage =
-          prevExpensesTotal === 0 ? 100 : Math.round(((currentExpensesTotal - prevExpensesTotal) / prevExpensesTotal) * 100);
-
-        // Calculate profit/loss change percentage
-        const profitLossChangePercentage =
-          prevProfitLoss === 0 ? 100 : Math.round(((currentProfitLoss - prevProfitLoss) / Math.abs(prevProfitLoss)) * 100);
-
-        // Calculate cash flow for each month in the last 6 months
-        console.log(`📅 [QB CONTROLLER] Building cash flow data...`);
-        const cashFlowData = [];
-
-        for (let i = 0; i < 6; i++) {
-          const monthDate = new Date();
-          monthDate.setMonth(monthDate.getMonth() - i);
-          monthDate.setDate(1);
-
-          const monthStart = new Date(monthDate);
-          const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0);
-
-          // Format month name
-          const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-          const formattedMonth = monthNames[monthDate.getMonth()];
-
-          // Try to get P&L data for this month for more accurate cash flow
-          let monthIncome = 0;
-          let monthExpenses = 0;
-          let monthProfit = 0;
-
-          try {
-            console.log(`📊 [QB CONTROLLER] Fetching P&L report for ${formattedMonth}...`);
-            const monthReportParams = {
-              start_date: formatQBDate(monthStart),
-              end_date: formatQBDate(monthEnd),
-              accounting_method: "Accrual",
-              minorversion: "65",
-            };
-
-            const monthReport = await quickbooksApiClient.getReport(organizationId, realmId, "ProfitAndLoss", monthReportParams);
-
-            // Parse P&L report for this month
-            if (monthReport && monthReport.Rows && monthReport.Rows.Row) {
-              const rows = monthReport.Rows.Row;
-              console.log(`📊 [QB DEBUG] ${formattedMonth} P&L rows count: ${rows.length}`);
-
-              // Look for direct Net Income (profit/loss) first - most accurate
-              const netIncomeRow = rows.find(
-                (row) =>
-                  row.group === "NetIncome" ||
-                  row.type === "NetIncome" ||
-                  (row.Header && row.Header.ColData && row.Header.ColData[0]?.value?.includes("Net Income"))
-              );
-
-              if (netIncomeRow && netIncomeRow.Summary && netIncomeRow.Summary.ColData) {
-                const valueCol = netIncomeRow.Summary.ColData.find((col) => col.value && !isNaN(parseFloat(col.value)));
-                if (valueCol) {
-                  monthProfit = parseFloat(valueCol.value);
-                  console.log(`📊 [QB CONTROLLER] Found ${formattedMonth} Net Income directly: ${monthProfit}`);
-                }
-              }
-
-              // Look for Total Income section
-              const totalIncomeRow = rows.find(
-                (row) =>
-                  row.group === "Income" ||
-                  row.type === "Income" ||
-                  (row.Header && row.Header.ColData && row.Header.ColData[0]?.value?.includes("Total Income"))
-              );
-
-              if (totalIncomeRow && totalIncomeRow.Summary && totalIncomeRow.Summary.ColData) {
-                const valueCol = totalIncomeRow.Summary.ColData.find((col) => col.value && !isNaN(parseFloat(col.value)));
-                if (valueCol) {
-                  monthIncome = parseFloat(valueCol.value);
-                  console.log(`📊 [QB CONTROLLER] Found ${formattedMonth} Total Income directly: ${monthIncome}`);
-                }
-              }
-
-              // Look for Total Expenses section
-              const totalExpensesRow = rows.find(
-                (row) =>
-                  row.group === "Expenses" ||
-                  row.type === "Expenses" ||
-                  (row.Header && row.Header.ColData && row.Header.ColData[0]?.value?.includes("Total Expenses"))
-              );
-
-              if (totalExpensesRow && totalExpensesRow.Summary && totalExpensesRow.Summary.ColData) {
-                const valueCol = totalExpensesRow.Summary.ColData.find((col) => col.value && !isNaN(parseFloat(col.value)));
-                if (valueCol) {
-                  monthExpenses = parseFloat(valueCol.value);
-                  console.log(`📊 [QB CONTROLLER] Found ${formattedMonth} Total Expenses directly: ${monthExpenses}`);
-                }
-              }
-
-              // If we didn't find everything but have both income and expenses, calculate profit
-              if (monthProfit === 0 && monthIncome > 0 && monthExpenses > 0) {
-                monthProfit = monthIncome - monthExpenses;
-                console.log(`📊 [QB CONTROLLER] Calculated ${formattedMonth} profit: ${monthProfit}`);
-              }
-
-              // Validate monthly calculations
-              console.log(`📊 [QB CONTROLLER] ${formattedMonth} validation:
-                Income: ${monthIncome}
-                Expenses: ${monthExpenses}
-                Profit/Loss: ${monthProfit}
-                Income - Expenses = ${monthIncome - monthExpenses}`);
-            }
-          } catch (monthReportError) {
-            console.warn(`⚠️ [QB CONTROLLER] Could not fetch P&L for ${formattedMonth}, using transaction data fallback.`, monthReportError);
-
-            // Fallback to transaction data if P&L report fetch failed
-            // Filter invoices for this month - removed "Balance === 0" filter to count partial payments
-            const monthInvoices = sixMonthInvoices.filter((invoice) => {
-              const txnDate = new Date(invoice.TxnDate);
-              return txnDate >= monthStart && txnDate <= monthEnd;
-            });
-
-            // Filter expenses for this month
-            const monthExpenses = sixMonthExpenses.filter((expense) => {
-              const txnDate = new Date(expense.TxnDate);
-              return txnDate >= monthStart && txnDate <= monthEnd;
-            });
-
-            // Summation from Invoices
-            monthIncome = monthInvoices.reduce((sum, invoice) => {
-              const receivedAmount = parseFloat(invoice.TotalAmt || "0") - parseFloat(invoice.Balance || "0");
-              return sum + receivedAmount;
-            }, 0);
-
-            // A quick fallback if no monthly invoices found, distribute the known YTD income or a fraction
-            if (monthIncome === 0) {
-              monthIncome = incomeFromAccounts / 6;
-            }
-
-            const monthExpensesTotal = monthExpenses.reduce((sum, expense) => sum + parseFloat(expense.TotalAmt || "0"), 0);
-
-            monthProfit = monthIncome - monthExpensesTotal;
-          }
-
-          cashFlowData.push({
-            month: formattedMonth,
-            income: monthIncome,
-            expenses: monthExpenses,
-            profit: monthProfit,
-          });
-        }
-
-        // Calculate top customers based on received money (currentInvoices only here)
-        console.log(`👤 [QB CONTROLLER] Building top customer data...`);
-        const customerRevenue = new Map();
-
-        currentInvoices.forEach((invoice) => {
-          if (invoice.CustomerRef) {
-            const customerId = invoice.CustomerRef.value;
-            if (!customerRevenue.has(customerId)) {
-              const customer = customers.find((c) => c.Id === customerId);
-              customerRevenue.set(customerId, {
-                id: customerId,
-                name: customer ? customer.DisplayName || "Customer" : "Customer",
-                revenue: 0,
-              });
-            }
-            const customerData = customerRevenue.get(customerId);
-            const receivedAmount = parseFloat(invoice.TotalAmt || "0") - parseFloat(invoice.Balance || "0");
-            customerData.revenue += receivedAmount;
-          }
-        });
-
-        const topCustomers = Array.from(customerRevenue.values())
-          .sort((a, b) => b.revenue - a.revenue)
-          .slice(0, 5);
-
-        // Calculate top expense categories (currentExpenses only)
-        console.log(`📋 [QB CONTROLLER] Building expense categories data...`);
-        const expenseCategories = new Map();
-
-        // First attempt to extract expense categories from the P&L report for better categorization
-        if (profitAndLossReport && profitAndLossReport.Rows) {
-          try {
-            console.log(`📋 [QB CONTROLLER] Analyzing P&L report for expense categories...`);
-            const rows = profitAndLossReport.Rows.Row || [];
-
-            // Find the expenses section
-            const expensesSection = rows.find((row) => row.group === "Expenses" || (row.header && row.header.label === "Expenses"));
-
-            if (expensesSection && expensesSection.Rows && expensesSection.Rows.Row) {
-              // Analyze each expense subcategory
-              expensesSection.Rows.Row.forEach((expenseRow) => {
-                if (expenseRow.ColData && expenseRow.ColData.length > 1) {
-                  const categoryName = expenseRow.ColData[0].value || "Uncategorized";
-                  const amountStr = expenseRow.ColData[1].value || "0";
-
-                  // Skip categories with 0 amount or summary rows
-                  if (amountStr !== "0" && !categoryName.includes("Total")) {
-                    const amount = parseFloat(amountStr);
-
-                    if (!isNaN(amount) && amount > 0) {
-                      expenseCategories.set(categoryName, {
-                        category: categoryName,
-                        amount: amount,
-                      });
-                    }
-                  }
-                }
-              });
-            }
-          } catch (error) {
-            console.warn(`⚠️ [QB CONTROLLER] Error extracting expense categories from P&L, using transaction fallback.`, error);
-          }
-        }
-
-        // If we didn't get data from P&L, fall back to transaction data
-        if (expenseCategories.size === 0) {
-          console.log(`📋 [QB CONTROLLER] Using transaction data for expense categories...`);
-
-          currentExpenses.forEach((expense) => {
-            if (expense.AccountRef) {
-              const categoryId = expense.AccountRef.value;
-              const categoryName = expense.AccountRef.name || "Uncategorized";
-
-              if (!expenseCategories.has(categoryId)) {
-                expenseCategories.set(categoryId, {
-                  category: categoryName,
-                  amount: 0,
-                });
-              }
-
-              const categoryData = expenseCategories.get(categoryId);
-              categoryData.amount += parseFloat(expense.TotalAmt || "0");
-            }
-          });
-        }
-
-        const topExpenseCategories = Array.from(expenseCategories.values())
-          .sort((a, b) => b.amount - a.amount)
-          .slice(0, 5);
-
-        // Generate recent activity based on invoices and expenses
-        console.log(`🔄 [QB CONTROLLER] Building recent activity data...`);
-        const recentActivity = [
-          ...currentInvoices
-            .filter((invoice) => parseFloat(invoice.TotalAmt || "0") - parseFloat(invoice.Balance || "0") > 0)
-            .map((invoice) => {
-              const customerName = invoice.CustomerRef
-                ? customers.find((c) => c.Id === invoice.CustomerRef.value)?.DisplayName || "Customer"
-                : "Customer";
-              const receivedAmount = parseFloat(invoice.TotalAmt || "0") - parseFloat(invoice.Balance || "0");
-              const status = invoice.Balance === 0 ? "fully" : "partially";
-
-              return {
-                id: invoice.Id,
-                type: "INVOICE_PAID",
-                description: `Invoice #${invoice.DocNumber || ""} ${status} paid by ${customerName}`,
-                date: new Date(invoice.TxnDate),
-                amount: receivedAmount,
-              };
-            }),
-          ...currentExpenses.map((expense) => {
-            return {
-              id: expense.Id,
-              type: "EXPENSE_PAID",
-              description: expense.PaymentType
-                ? `Paid ${expense.PaymentType} to ${expense.EntityRef?.name || "Vendor"}`
-                : `Expense paid to ${expense.EntityRef?.name || "Vendor"}`,
-              date: new Date(expense.TxnDate),
-              amount: -parseFloat(expense.TotalAmt || "0"), // Negative for expenses
-            };
-          }),
-        ]
-          .sort((a, b) => b.date.getTime() - a.date.getTime())
-          .slice(0, 5); // Most recent 5
-
-        // Calculate cash change percentage
-        const currentCashFlow = currentIncome - currentExpensesTotal;
-        const prevCashFlow = prevIncome - prevExpensesTotal;
-        const cashChangePercentage =
-          prevCashFlow === 0 ? (currentCashFlow > 0 ? 100 : 0) : Math.round(((currentCashFlow - prevCashFlow) / Math.abs(prevCashFlow)) * 100);
-
-        // Make sure the profitLoss.mtd value is consistent with income.mtd and expenses.mtd
-        let finalProfitLoss = currentProfitLoss;
-        if (Math.abs(currentIncome - currentExpensesTotal - currentProfitLoss) > 1) {
-          console.warn(`⚠️ [QB CONTROLLER] Fixing profit discrepancy:
-            Original profit: ${currentProfitLoss}
-            Recalculated: ${currentIncome - currentExpensesTotal}
-          `);
-          finalProfitLoss = currentIncome - currentExpensesTotal;
-        }
-
-        // Validate previous month profit calculation as well
-        let finalPrevProfitLoss = prevProfitLoss;
-        if (Math.abs(prevIncome - prevExpensesTotal - prevProfitLoss) > 1) {
-          console.warn(`⚠️ [QB CONTROLLER] Fixing previous month profit discrepancy:
-            Original profit: ${prevProfitLoss}
-            Recalculated: ${prevIncome - prevExpensesTotal}
-          `);
-          finalPrevProfitLoss = prevIncome - prevExpensesTotal;
-        }
-
-        // Recalculate profit/loss change percentage with accurate values
-        const recalculatedProfitLossChangePercentage =
-          finalPrevProfitLoss === 0 ? 100 : Math.round(((finalProfitLoss - finalPrevProfitLoss) / Math.abs(finalPrevProfitLoss)) * 100);
-
-        // Log the final metrics after all reconciliation
-        console.log(`📊 [QB CONTROLLER] Final reconciled metrics:
-          Current Month:
-            Income: ${currentIncome}
-            Expenses: ${currentExpensesTotal}
-            Reconciled Profit: ${currentProfitLoss}
-          
-          Previous Month:
-            Income: ${prevIncome}
-            Expenses: ${prevExpensesTotal}
-            Reconciled Profit: ${finalPrevProfitLoss}
-            
-          Change Percentages:
-            Original P&L Change: ${profitLossChangePercentage}%
-            Reconciled P&L Change: ${recalculatedProfitLossChangePercentage}%
-        `);
-
-        // Log final validation of cash flow data
-        console.log(`✅ [QB CONTROLLER] Cash flow data validation:
-          First month:
-            Month: ${cashFlowData[0]?.month}
-            Income: ${cashFlowData[0]?.income}
-            Expenses: ${cashFlowData[0]?.expenses}
-            Profit: ${cashFlowData[0]?.profit}
-        `);
-
-        // And same check for each cash flow month
-        cashFlowData.forEach((monthData, index) => {
-          if (Math.abs(monthData.income - monthData.expenses - monthData.profit) > 1) {
-            console.warn(`⚠️ [QB CONTROLLER] Fixing ${monthData.month} profit discrepancy:
-              Original profit: ${monthData.profit}
-              Recalculated: ${monthData.income - monthData.expenses}
-            `);
-            monthData.profit = monthData.income - monthData.expenses;
-          }
-        });
-
-        // Also fetch previous month's balance sheet for cash comparison
-        let prevMonthCashBalance = 0;
-        try {
-          console.log(`💼 [QB CONTROLLER] Fetching previous month BalanceSheet report...`);
-
-          const prevBalanceSheetParams = {
-            start_date: formatQBDate(prevMonthStart),
-            end_date: formatQBDate(prevMonthEnd),
-            accounting_method: "Accrual",
-            minorversion: "65",
-          };
-
-          const prevBalanceSheetReport = await quickbooksApiClient.getReport(organizationId, realmId, "BalanceSheet", prevBalanceSheetParams);
-
-          if (prevBalanceSheetReport && prevBalanceSheetReport.Rows && prevBalanceSheetReport.Rows.Row) {
-            const rows = prevBalanceSheetReport.Rows.Row;
-
-            // Look for Assets section
-            const assetsSection = rows.find(
-              (row) => row.group === "Assets" || (row.Header && row.Header.ColData && row.Header.ColData[0].value === "Assets")
-            );
-
-            if (assetsSection && assetsSection.Rows && assetsSection.Rows.Row) {
-              // Find Current Assets section
-              const currentAssetsSection = assetsSection.Rows.Row.find(
-                (row) => row.group === "CurrentAssets" || (row.Header && row.Header.ColData && row.Header.ColData[0].value === "Current Assets")
-              );
-
-              if (currentAssetsSection && currentAssetsSection.Rows && currentAssetsSection.Rows.Row) {
-                // Look for Bank Accounts or Cash accounts
-                const bankSection = currentAssetsSection.Rows.Row.find(
-                  (row) => row.group === "BankAccounts" || (row.Header && row.Header.ColData && row.Header.ColData[0].value === "Bank Accounts")
-                );
-
-                if (bankSection && bankSection.Summary && bankSection.Summary.ColData) {
-                  const bankValueCol = bankSection.Summary.ColData.find((col) => col.value && !isNaN(parseFloat(col.value)));
-                  if (bankValueCol) {
-                    prevMonthCashBalance = parseFloat(bankValueCol.value);
-                    console.log(`💰 [QB CONTROLLER] Found previous month cash balance from BalanceSheet: ${prevMonthCashBalance}`);
-                  }
-                }
-
-                // If not found via BankAccounts structure, try direct cash account rows
-                if (prevMonthCashBalance === 0) {
-                  // Manually look for cash/bank accounts at current assets level
-                  currentAssetsSection.Rows.Row.forEach((row) => {
-                    if (row.ColData && row.ColData.length > 1) {
-                      const accountName = row.ColData[0].value || "";
-                      if (accountName.toLowerCase().includes("cash") || accountName.toLowerCase().includes("bank")) {
-                        const accountBalance = parseFloat(row.ColData[1].value || "0");
-                        if (!isNaN(accountBalance)) {
-                          prevMonthCashBalance += accountBalance;
-                          console.log(`💰 [QB CONTROLLER] Adding previous month cash account '${accountName}': ${accountBalance}`);
-                        }
-                      }
-                    }
-                  });
-                }
-              }
-            }
-          }
-        } catch (err) {
-          console.warn(`⚠️ [QB CONTROLLER] Could not fetch previous month BalanceSheet report.`, err);
-          prevMonthCashBalance = 0;
-        }
-
-        // Calculate profit margin (profit as percentage of income)
-        let profitMargin = 0;
-        if (finalProfitLoss !== 0 && currentIncome > 0) {
-          // For very small income values, profit margin can be extreme and not meaningful
-          // If income is very small (less than $100), set a cap on the profit margin to avoid misleading numbers
-          if (currentIncome < 100) {
-            console.warn(`⚠️ [QB CONTROLLER] Income is very small (${currentIncome}), profit margin would be misleading.`);
-            // If profit is negative, cap at -100%, if positive, cap at 100%
-            profitMargin = finalProfitLoss < 0 ? -100 : 100;
-          } else {
-            profitMargin = Math.round((finalProfitLoss / currentIncome) * 100);
-          }
-          console.log(`📊 [QB CONTROLLER] Calculated profit margin: ${profitMargin}%`);
-        } else {
-          console.log(`⚠️ [QB CONTROLLER] Cannot calculate profit margin (income: ${currentIncome}, profit: ${finalProfitLoss})`);
-          // If income is zero or negative but we have a loss, set to -100%
-          if (finalProfitLoss < 0) {
-            profitMargin = -100;
-            console.log(`📊 [QB CONTROLLER] Using default negative profit margin: ${profitMargin}%`);
-          }
-        }
-
-        // Calculate a more accurate cash change percentage using balance sheet data
-        let improvedCashChangePercentage = 0;
-        if (prevMonthCashBalance > 0) {
-          improvedCashChangePercentage = Math.round(((cashBalance - prevMonthCashBalance) / prevMonthCashBalance) * 100);
-          console.log(`💰 [QB CONTROLLER] Calculated cash change from balance sheets: ${improvedCashChangePercentage}%`);
-        } else {
-          // Fallback to the original calculation
-          const currentCashFlow = finalProfitLoss;
-          const prevCashFlow = finalPrevProfitLoss;
-          improvedCashChangePercentage =
-            prevCashFlow === 0 ? (currentCashFlow > 0 ? 100 : 0) : Math.round(((currentCashFlow - prevCashFlow) / Math.abs(prevCashFlow)) * 100);
-        }
-
-        // Assemble and return the dashboard data with final reconciled values
-        console.log(`✅ [QB CONTROLLER] Dashboard data assembly complete with reconciled values`);
-
-        return {
-          cash: {
-            balance: cashBalance,
-            changePercentage: improvedCashChangePercentage,
-          },
-          income: {
-            mtd: currentIncome,
-            changePercentage: incomeChangePercentage,
-          },
-          expenses: {
-            mtd: currentExpensesTotal,
-            changePercentage: expensesChangePercentage,
-          },
-          profitLoss: {
-            mtd: finalProfitLoss,
-            changePercentage: recalculatedProfitLossChangePercentage,
-          },
-          profitMargin, // Add profit margin to the dashboard data
-          recentActivity,
-          cashFlow: cashFlowData,
-          topCustomers,
-          topExpenseCategories,
-          source: "quickbooks",
-        };
-      } catch (apiError) {
-        console.error(`❌ [QB CONTROLLER] Error in QuickBooks API calls:`, apiError);
-        if (apiError instanceof Error) {
-          console.error("Error name:", apiError.name);
-          console.error("Error message:", apiError.message);
-          console.error("Error stack:", apiError.stack);
-
-          if ("statusCode" in apiError) {
-            console.error("Error status code:", (apiError as any).statusCode);
-          }
-
-          if (apiError.message.includes("parsing query") || apiError.message.includes("query")) {
-            console.error("⚠️ [QB CONTROLLER] Query syntax error detected. Check the QuickBooks API documentation.");
-            console.error("⚠️ [QB CONTROLLER] Suggestion: Try simplifying the query or using different syntax.");
-
-            if (process.env.NODE_ENV === "development") {
-              try {
-                console.log("🧪 [QB CONTROLLER] Attempting simple test query...");
-                const testQuery = "SELECT * FROM CompanyInfo";
-                await quickbooksApiClient.query(organizationId, realmId, testQuery);
-                console.log("✅ [QB CONTROLLER] Test query succeeded, issue is with specific query syntax");
-              } catch (testError) {
-                console.error("❌ [QB CONTROLLER] Test query also failed, may be connection issue", testError);
-              }
-            }
-          }
-        }
-
-        throw new ApiError(500, `QuickBooks API error: ${apiError instanceof Error ? apiError.message : "Unknown error"}`);
+      const multiMonthPLReport = await quickbooksApiClient.getReport(
+        organizationId,
+        realmId,
+        "ProfitAndLoss",
+        plParams
+      );
+
+      // 4. Parse the multi-month P&L into a structured array
+      const monthlyPLData = this.parseMultiMonthProfitAndLoss(multiMonthPLReport);
+
+      // ------------------------------------------------------------------
+      // The array "monthlyPLData" typically goes oldest -> newest month.
+      // For example:
+      // [
+      //   { start: '2023-09-01', end: '2023-09-30', label: 'Sep 2023', income: 5000, expenses: 3000, netIncome: 2000 },
+      //   { start: '2023-10-01', end: '2023-10-31', label: 'Oct 2023', ... },
+      //   ...
+      //   { start: '2024-02-01', end: '2024-02-29', label: 'Feb 2024', income: 9000, expenses: 7000, netIncome: 2000 }
+      // ]
+      // The last entry is presumably the "current month", 
+      // the second-to-last is the "previous month".
+      // ------------------------------------------------------------------
+
+      if (!monthlyPLData.length) {
+        throw new ApiError(400, "No monthly data returned from P&L");
       }
-    } catch (error) {
-      console.error(`❌ [QB CONTROLLER] Error in getDashboardData:`, error);
-      if (error instanceof ApiError) {
-        throw error;
+
+      // Identify the current and previous months in that array
+      const currentMonthPL = monthlyPLData[monthlyPLData.length - 1]; // last
+      const prevMonthPL = monthlyPLData.length > 1
+        ? monthlyPLData[monthlyPLData.length - 2]
+        : null; // second-to-last if we have it
+
+      // Extract the final current month's Income, Expenses, Profit
+      const currentIncome = currentMonthPL.income;
+      const currentExpenses = currentMonthPL.expenses;
+      const currentProfitLoss = currentMonthPL.netIncome;
+
+      // If we have a previous month
+      let prevIncome = 0, prevExpenses = 0, prevProfitLoss = 0;
+      if (prevMonthPL) {
+        prevIncome = prevMonthPL.income;
+        prevExpenses = prevMonthPL.expenses;
+        prevProfitLoss = prevMonthPL.netIncome;
+      }
+
+      // 5. Fetch the current month & previous month BalanceSheet (cash basis) for "cash" amounts
+      //    (We do this in two calls, one for each month, for an apples-to-apples comparison.)
+      const [ cashBalance, prevMonthCashBalance ] = await Promise.all([
+        this.fetchCashBalance(
+          organizationId,
+          realmId,
+          currentMonthStart,
+          currentMonthEnd
+        ),
+        this.fetchCashBalance(
+          organizationId,
+          realmId,
+          prevMonthStart,
+          prevMonthEnd
+        ),
+      ]);
+
+      // 6. Compute change percentages
+      const incomeChangePercentage = this.percentageChange(prevIncome, currentIncome);
+      const expensesChangePercentage = this.percentageChange(prevExpenses, currentExpenses);
+      const profitLossChangePercentage = this.percentageChange(
+        prevProfitLoss,
+        currentProfitLoss,
+        true // absolute denominator
+      );
+
+      // "cash" change can be based on actual balances from the two BalanceSheets
+      let cashChangePercentage = 0;
+      if (prevMonthCashBalance > 0) {
+        cashChangePercentage = Math.round(
+          ((cashBalance - prevMonthCashBalance) / prevMonthCashBalance) * 100
+        );
       } else {
-        throw new ApiError(500, `Error getting QuickBooks dashboard data: ${error instanceof Error ? error.message : "Unknown error"}`);
+        // fallback: compare net incomes
+        cashChangePercentage = this.percentageChange(prevProfitLoss, currentProfitLoss, true);
+      }
+
+      // 7. Build the final "cash flow" data from the monthly P&L we already have.
+      //    This is basically the same as monthlyPLData but renamed "month" for your final structure.
+      //    The user wants 6 months, but if QBO returns fewer, we show what we have.
+      const cashFlowData = monthlyPLData.map((pl) => ({
+        month: pl.label,
+        income: pl.income,
+        expenses: pl.expenses,
+        profit: pl.netIncome,
+      }));
+
+      // 8. Fetch current month Invoices + Purchases for recent activity and top customers
+      const currentInvoices = await this.fetchInvoices(
+        organizationId,
+        realmId,
+        currentMonthStart,
+        currentMonthEnd
+      );
+      const currentPurchases = await this.fetchPurchases(
+        organizationId,
+        realmId,
+        currentMonthStart,
+        currentMonthEnd
+      );
+
+      // 9. Build "recent activity" (last 5 items) 
+      const customers = await this.fetchAllCustomers(organizationId, realmId);
+      const recentActivity = this.buildRecentActivity(currentInvoices, currentPurchases, customers);
+
+      // 10. Build "top customers" by summing paid amounts in the current Invoices
+      const topCustomers = this.buildTopCustomers(currentInvoices, customers);
+
+      // 11. Extract top expense categories from the current month's P&L data 
+      //    or from the entire multi-month P&L. We'll do "current month" only
+      //    by looking at the "Expenses" sub-rows for that column. 
+      //    We already have multiMonthPLReport. 
+      //    We'll do a dedicated method that tries to parse the P&L rows for the last column only.
+      let topExpenseCategories = this.extractExpenseCategoriesForColumn(
+        multiMonthPLReport,
+        monthlyPLData.length - 1 // index of the last column, ignoring "label" and "total" columns
+      );
+      if (!topExpenseCategories.length) {
+        // fallback to transaction-based grouping if the P&L structure is incomplete
+        topExpenseCategories = this.buildExpenseCategoriesFromPurchases(currentPurchases);
+      }
+
+      // 12. Profit margin (profit as % of income) for the current month
+      let profitMargin = 0;
+      if (currentIncome !== 0) {
+        profitMargin = Math.round((currentProfitLoss / currentIncome) * 100);
+      }
+
+      // Compile final results
+      return {
+        cash: {
+          balance: cashBalance,
+          changePercentage: cashChangePercentage,
+        },
+        income: {
+          mtd: currentIncome,
+          changePercentage: incomeChangePercentage,
+        },
+        expenses: {
+          mtd: currentExpenses,
+          changePercentage: expensesChangePercentage,
+        },
+        profitLoss: {
+          mtd: currentProfitLoss,
+          changePercentage: profitLossChangePercentage,
+        },
+        profitMargin,
+        recentActivity,
+        cashFlow: cashFlowData,
+        topCustomers,
+        topExpenseCategories,
+        source: "quickbooks",
+      };
+    } catch (err) {
+      console.error(`[QB CONTROLLER] getDashboardData error:`, err);
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      throw new ApiError(
+        500,
+        `Error retrieving QuickBooks dashboard data: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Helper: fetch "cash" balance from BalanceSheet (cash basis) 
+  // for a given date range.
+  // ------------------------------------------------------------------
+  private async fetchCashBalance(
+    organizationId: string,
+    realmId: string,
+    startDate: Date,
+    endDate: Date
+  ) {
+    try {
+      const params = {
+        start_date: startDate.toISOString().split("T")[0],
+        end_date: endDate.toISOString().split("T")[0],
+        accounting_method: "Cash",
+        minorversion: "65",
+      };
+      const bsReport = await quickbooksApiClient.getReport(
+        organizationId,
+        realmId,
+        "BalanceSheet",
+        params
+      );
+      return this.extractCashFromBalanceSheet(bsReport);
+    } catch (err) {
+      console.warn(`[QB CONTROLLER] BalanceSheet fetch failed; returning 0.`, err);
+      return 0;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Helper: single multi-month P&L parse method.
+  // Returns an array of monthly data: 
+  //   [ { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', label: 'MMM YYYY', income, expenses, netIncome }, ... ]
+  // ------------------------------------------------------------------
+  private parseMultiMonthProfitAndLoss(report: any) {
+    if (!report || !report.Columns?.Column || !report.Rows?.Row) return [];
+
+    const columnInfo = report.Columns.Column; // e.g. array of columns
+    const rows = report.Rows.Row;
+
+    // First, figure out how many "month" columns we actually have 
+    // (excluding the first label column & possible last "Total" column).
+    // Typically:
+    //   column[0] = "Account" or "Category" label
+    //   column[1..N] = months
+    //   column[N+1] = "Total"
+    // But we must check the "ColType" or "ColTitle" or "MetaData" to be sure.
+    //
+    // We'll build an array describing each "month" column: { indexInColData, label, startPeriod, endPeriod, isTotal? }
+
+    const parsedColumns: Array<{
+      indexInColData: number;
+      label: string;           // e.g. "Sep 2023" 
+      startPeriod?: string;    // from MetaData
+      endPeriod?: string;      // from MetaData
+      isTotal?: boolean;
+    }> = [];
+
+    // Start from i=1 because i=0 might be the label column
+    for (let i = 1; i < columnInfo.length; i++) {
+      const col = columnInfo[i];
+      const colTitle = col.ColTitle || "";
+      const meta = col.MetaData || [];
+
+      // Try to detect if it's a "Total" column
+      const colType = col.ColType || "";
+      const maybeIsTotal =
+        colType.toLowerCase() === "total" ||
+        /total/i.test(colTitle);
+
+      // Some QBO responses mark the "Total" column with a specific "type" or "id" in `MetaData`.
+      // We'll do a simpler approach: if the last column's title includes "Total," 
+      // or if colType is "Total", we treat it as the total column.
+      parsedColumns.push({
+        indexInColData: i,
+        label: colTitle,
+        startPeriod: meta.find((m: any) => m.Name === "StartPeriod")?.Value,
+        endPeriod: meta.find((m: any) => m.Name === "EndPeriod")?.Value,
+        isTotal: maybeIsTotal,
+      });
+    }
+
+    // If the very last one is "Total", we ignore it for monthly breakdown
+    // So let's separate them into monthly columns vs. total column
+    const columnsExcludingTotal = parsedColumns.filter((c) => !c.isTotal);
+
+    // We'll parse Income, Expenses, NetIncome from the P&L rows for each column
+    // Then build an array of month-level data
+    // QBO typically has a row for "Income", a row for "Expenses", a row for "NetIncome".
+    // But sometimes those are sub-rows or labeled differently. We'll handle the group or type checks.
+
+    // We can store the final array of:
+    //   { start: string, end: string, label: string, income: number, expenses: number, netIncome: number }
+    const result: Array<{
+      start: string;
+      end: string;
+      label: string;
+      income: number;
+      expenses: number;
+      netIncome: number;
+    }> = [];
+
+    // For each of the columns (which presumably are in chronological order),
+    // we want to see how the "Income" row, "Expenses" row, and "Net Income" row parse out.
+
+    // We'll read the entire row data first
+    let incomeRow: any = null;
+    let expensesRow: any = null;
+    let netIncomeRow: any = null;
+
+    // QBO might produce them as top-level row.group === "Income"/"Expenses"/"NetIncome"
+    // or row.type === "Income"/"Expenses"/"NetIncome".
+    // Or the "Net Income" might appear as row group "NetOperatingIncome" vs "NetIncome". 
+    // We'll do a best-effort find.
+    for (const row of rows) {
+      const headerVal = row.Header?.ColData?.[0]?.value || "";
+      const group = row.group || row.type || "";
+
+      // Income row
+      if (
+        group === "Income" ||
+        headerVal.includes("Total Income") ||
+        headerVal === "Income"
+      ) {
+        incomeRow = row;
+      }
+      // Expenses row
+      if (
+        group === "Expenses" ||
+        headerVal.includes("Total Expenses") ||
+        headerVal === "Expenses"
+      ) {
+        expensesRow = row;
+      }
+      // Net Income row
+      if (
+        group === "NetIncome" ||
+        headerVal.includes("Net Income") ||
+        headerVal === "NetIncome"
+      ) {
+        netIncomeRow = row;
       }
     }
+
+    // We'll parse each monthly column
+    for (const colDef of columnsExcludingTotal) {
+      const incomeVal = this.getAmountFromRowAndCol(incomeRow, colDef.indexInColData);
+      const expenseVal = this.getAmountFromRowAndCol(expensesRow, colDef.indexInColData);
+      let netVal = this.getAmountFromRowAndCol(netIncomeRow, colDef.indexInColData);
+
+      // If netVal is 0 and we have income/expenses, compute it
+      if (netVal === 0 && (incomeVal !== 0 || expenseVal !== 0)) {
+        netVal = incomeVal - expenseVal;
+      }
+
+      result.push({
+        start: colDef.startPeriod || "",
+        end: colDef.endPeriod || "",
+        label: colDef.label || "Period",
+        income: incomeVal,
+        expenses: expenseVal,
+        netIncome: netVal,
+      });
+    }
+
+    return result;
+  }
+
+  // Helper to read a numeric value from a row's "Summary.ColData[i]" 
+  // or from row.ColData (depending on QBO structure).
+  private getAmountFromRowAndCol(row: any, colIndex: number) {
+    if (!row) return 0;
+
+    // Some rows hold the numeric data in row.Summary.ColData
+    // Others hold them in row.ColData. 
+    // Usually, for a "group" row (like "Income" with a summary), it's row.Summary.ColData
+    // For a line item row, it's row.ColData. 
+    // We'll check Summary first, fallback to ColData.
+    let valStr: string | undefined;
+
+    if (row.Summary?.ColData?.[colIndex]?.value) {
+      valStr = row.Summary.ColData[colIndex].value;
+    } else if (row.ColData?.[colIndex]?.value) {
+      valStr = row.ColData[colIndex].value;
+    }
+
+    const val = parseFloat(valStr || "0");
+    return isNaN(val) ? 0 : val;
+  }
+
+  // ------------------------------------------------------------------
+  // Extract the "cash" (bank accounts, etc.) from a BalanceSheet (cash).
+  // ------------------------------------------------------------------
+  private extractCashFromBalanceSheet(report: any): number {
+    if (!report?.Rows?.Row) return 0;
+    const rows = report.Rows.Row;
+    let totalCash = 0;
+
+    // Typically, we look for the "Assets" > "Current Assets" > "Bank Accounts"
+    const assetsSection = rows.find(
+      (r: any) =>
+        r.group === "Assets" ||
+        (r.Header?.ColData?.[0]?.value === "Assets")
+    );
+    if (!assetsSection?.Rows?.Row) return 0;
+
+    const currentAssets = assetsSection.Rows.Row.find(
+      (r: any) =>
+        r.group === "CurrentAssets" ||
+        (r.Header?.ColData?.[0]?.value === "Current Assets")
+    );
+    if (!currentAssets?.Rows?.Row) return 0;
+
+    // 1) Try the "Bank Accounts" group
+    const bankSection = currentAssets.Rows.Row.find(
+      (r: any) =>
+        r.group === "BankAccounts" ||
+        (r.Header?.ColData?.[0]?.value === "Bank Accounts")
+    );
+    if (bankSection?.Summary?.ColData) {
+      const valCol = bankSection.Summary.ColData.find(
+        (c: any) => c.value && !isNaN(parseFloat(c.value))
+      );
+      if (valCol) {
+        totalCash = parseFloat(valCol.value);
+      }
+    }
+
+    // 2) If we still have 0, look for any row containing "cash" or "bank"
+    if (totalCash === 0) {
+      currentAssets.Rows.Row.forEach((r: any) => {
+        if (r.ColData?.length > 1) {
+          const name = r.ColData[0].value?.toLowerCase() || "";
+          const amt = parseFloat(r.ColData[1].value || "0");
+          if ((name.includes("cash") || name.includes("bank")) && !isNaN(amt)) {
+            totalCash += amt;
+          }
+        }
+      });
+    }
+
+    return totalCash;
+  }
+
+  // ------------------------------------------------------------------
+  // Query Invoices in a given date range
+  // ------------------------------------------------------------------
+  private async fetchInvoices(
+    organizationId: string,
+    realmId: string,
+    startDate: Date,
+    endDate: Date
+  ) {
+    const query = `
+      SELECT * 
+      FROM Invoice 
+      WHERE TxnDate >= '${startDate.toISOString().split("T")[0]}' 
+        AND TxnDate <= '${endDate.toISOString().split("T")[0]}'
+    `;
+    const response = await quickbooksApiClient.query(organizationId, realmId, query);
+    return response.QueryResponse.Invoice || [];
+  }
+
+  // ------------------------------------------------------------------
+  // Query Purchases in a given date range
+  // ------------------------------------------------------------------
+  private async fetchPurchases(
+    organizationId: string,
+    realmId: string,
+    startDate: Date,
+    endDate: Date
+  ) {
+    const query = `
+      SELECT * 
+      FROM Purchase
+      WHERE TxnDate >= '${startDate.toISOString().split("T")[0]}'
+        AND TxnDate <= '${endDate.toISOString().split("T")[0]}'
+    `;
+    const response = await quickbooksApiClient.query(organizationId, realmId, query);
+    return response.QueryResponse.Purchase || [];
+  }
+
+  // ------------------------------------------------------------------
+  // Fetch all customers (used for naming in "recent activity" or "top customers")
+  // ------------------------------------------------------------------
+  private async fetchAllCustomers(organizationId: string, realmId: string) {
+    const query = `SELECT * FROM Customer`;
+    const response = await quickbooksApiClient.query(organizationId, realmId, query);
+    return response.QueryResponse.Customer || [];
+  }
+
+  // ------------------------------------------------------------------
+  // Build "recent activity" from invoices and purchases 
+  // Return the last 5 sorted by TxnDate desc
+  // ------------------------------------------------------------------
+  private buildRecentActivity(invoices: any[], purchases: any[], customers: any[]) {
+    const activities = [
+      ...invoices
+        .filter((inv) => {
+          const total = parseFloat(inv.TotalAmt || "0");
+          const balance = parseFloat(inv.Balance || "0");
+          return total - balance > 0; // partially or fully paid
+        })
+        .map((invoice) => {
+          const paidAmt = parseFloat(invoice.TotalAmt || "0") - parseFloat(invoice.Balance || "0");
+          const custName = invoice.CustomerRef
+            ? customers.find((c) => c.Id === invoice.CustomerRef.value)?.DisplayName || "Customer"
+            : "Customer";
+          const isFullyPaid = parseFloat(invoice.Balance || "0") === 0;
+          const status = isFullyPaid ? "fully" : "partially";
+
+          return {
+            id: invoice.Id,
+            type: "INVOICE_PAID",
+            description: `Invoice #${invoice.DocNumber || ""} ${status} paid by ${custName}`,
+            date: new Date(invoice.TxnDate),
+            amount: paidAmt,
+          };
+        }),
+      ...purchases.map((pur) => {
+        const payeeName = pur.EntityRef?.name || "Vendor";
+        return {
+          id: pur.Id,
+          type: "EXPENSE_PAID",
+          description: pur.PaymentType
+            ? `Paid ${pur.PaymentType} to ${payeeName}`
+            : `Expense paid to ${payeeName}`,
+          date: new Date(pur.TxnDate),
+          amount: -parseFloat(pur.TotalAmt || "0"),
+        };
+      }),
+    ];
+
+    // Sort by date desc, take last 5
+    return activities
+      .sort((a, b) => b.date.getTime() - a.date.getTime())
+      .slice(0, 5);
+  }
+
+  // ------------------------------------------------------------------
+  // Build "top customers" from the paid portion of Invoices
+  // ------------------------------------------------------------------
+  private buildTopCustomers(invoices: any[], customers: any[]) {
+    const revenueMap = new Map<string, { id: string; name: string; revenue: number }>();
+    for (const inv of invoices) {
+      if (inv.CustomerRef) {
+        const cid = inv.CustomerRef.value;
+        if (!revenueMap.has(cid)) {
+          const cust = customers.find((c) => c.Id === cid);
+          revenueMap.set(cid, {
+            id: cid,
+            name: cust ? cust.DisplayName || "Customer" : "Customer",
+            revenue: 0,
+          });
+        }
+        const paidAmt = parseFloat(inv.TotalAmt || "0") - parseFloat(inv.Balance || "0");
+        revenueMap.get(cid)!.revenue += paidAmt;
+      }
+    }
+
+    return Array.from(revenueMap.values())
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5);
+  }
+
+  // ------------------------------------------------------------------
+  // Extract top expense categories from the "Expenses" row in a multi-column P&L
+  // for a specific column index (e.g. the last column for "current month").
+  // If the user wants the entire multi-month total, you could pick the "Total" column 
+  // instead. This example just picks the final monthly column.
+  // ------------------------------------------------------------------
+  private extractExpenseCategoriesForColumn(report: any, colIndex: number) {
+    // We'll look for the top-level "Expenses" row, 
+    // then each subRow with a label and a numeric value in colIndex.
+    const results: Array<{ category: string; amount: number }> = [];
+    if (!report?.Rows?.Row) return results;
+
+    // Find the "Expenses" group
+    const expensesRow = report.Rows.Row.find(
+      (r: any) =>
+        r.group === "Expenses" ||
+        r.Header?.ColData?.[0]?.value === "Expenses" ||
+        (r.Header?.ColData?.[0]?.value || "").includes("Total Expenses")
+    );
+    if (!expensesRow?.Rows?.Row) {
+      return results;
+    }
+
+    // In that group, each subRow might be a category line with "ColData"
+    // We'll read colData[0] for the category name, colData[colIndex] for the numeric
+    for (const subRow of expensesRow.Rows.Row) {
+      // Some subRows might have their own .Rows -> indicates subcategories
+      if (subRow.ColData?.length > colIndex) {
+        const catName = subRow.ColData[0].value || "";
+        if (catName.toLowerCase().includes("total")) {
+          continue; // skip "Total" lines
+        }
+        const valStr = subRow.ColData[colIndex]?.value || "0";
+        const valNum = parseFloat(valStr);
+        if (!isNaN(valNum) && valNum !== 0) {
+          results.push({ category: catName, amount: valNum });
+        }
+      }
+
+      // If there's a nested .Rows, parse them similarly
+      if (subRow.Rows?.Row) {
+        for (const nestedRow of subRow.Rows.Row) {
+          if (nestedRow.ColData?.length > colIndex) {
+            const catName = nestedRow.ColData[0].value || "";
+            if (catName.toLowerCase().includes("total")) {
+              continue;
+            }
+            const valStr = nestedRow.ColData[colIndex]?.value || "0";
+            const valNum = parseFloat(valStr);
+            if (!isNaN(valNum) && valNum !== 0) {
+              results.push({ category: catName, amount: valNum });
+            }
+          }
+        }
+      }
+    }
+
+    // Sort descending, top 5
+    return results.sort((a, b) => b.amount - a.amount).slice(0, 5);
+  }
+
+  // ------------------------------------------------------------------
+  // If we fail to parse P&L for categories, fallback: group from Purchases
+  // ------------------------------------------------------------------
+  private buildExpenseCategoriesFromPurchases(purchases: any[]) {
+    const map = new Map<string, { category: string; amount: number }>();
+    for (const p of purchases) {
+      const catId = p.AccountRef?.value || "Uncategorized";
+      const catName = p.AccountRef?.name || "Uncategorized";
+      if (!map.has(catId)) {
+        map.set(catId, { category: catName, amount: 0 });
+      }
+      map.get(catId)!.amount += parseFloat(p.TotalAmt || "0");
+    }
+    return Array.from(map.values())
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5);
+  }
+
+  // ------------------------------------------------------------------
+  // Utility: compute percentage change
+  // (newVal - oldVal) / |oldVal| * 100 if absDenominator = true
+  // ------------------------------------------------------------------
+  private percentageChange(oldVal: number, newVal: number, absDenominator = false) {
+    if (oldVal === 0) {
+      return newVal > 0 ? 100 : newVal < 0 ? -100 : 0;
+    }
+    const denom = absDenominator ? Math.abs(oldVal) : oldVal;
+    return Math.round(((newVal - oldVal) / denom) * 100);
   }
 }
 
-// Export singleton instance
+// Export a singleton instance
 export const quickbooksDashboardController = new QuickbooksDashboardController();
