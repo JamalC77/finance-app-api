@@ -1,685 +1,662 @@
 import { prisma } from "../../utils/prisma";
 import { ApiError } from "../../utils/errors";
 import { quickbooksApiClient } from "../../services/quickbooks/quickbooksApiClient";
+import { cacheService } from "../../services/cacheService"; // Conceptual: Implement this (e.g., Redis)
+import { forecastService } from "../../services/financial/forecastService"; // Conceptual: Implement forecasting logic
+import { insightsService } from "../../services/financial/insightsService"; // Conceptual: Implement insights engine
+import { benchmarkService } from "../../services/financial/benchmarkService"; // Conceptual: Implement benchmark fetching
+import {
+  parseMultiMonthProfitAndLoss,
+  parseBalanceSheet,
+  ChartOfAccountsMap, // Assuming helper types/functions are moved/created
+  ParsedReportData,
+  ParsedBalanceSheet,
+  calculateCoreMetrics,
+  calculateFinancialRatios,
+  calculateTrends,
+  calculateAging,
+  calculateRunway,
+  buildRecentActivity, // Assuming these helpers are refined
+  buildTopCustomers,
+  extractTopExpenseCategories,
+} from "../../services/quickbooks/quickbooksReportParser"; // Conceptual: Refactor parsing/calculation logic into separate modules
 
-/**
- * Controller for fetching a cash-based dashboard from QuickBooks.
- * Demonstrates a single multi-column P&L report for multiple months.
- */
+// Define expected types for clarity (adjust as needed based on actual parsing results)
+interface CoreMetrics {
+  currentIncome: number;
+  currentExpenses: number;
+  currentProfitLoss: number;
+  cashBalance: number;
+  prevMonthCashBalance: number;
+  yoyCashBalance?: number;
+  totalAR: number;
+  totalAP: number;
+  totalCOGS: number; // Needed for Gross Profit
+  totalOperatingExpenses: number; // Needed for Operating Profit
+  totalCurrentAssets: number;
+  totalCurrentLiabilities: number;
+  totalAssets: number;
+  totalLiabilities: number;
+  totalEquity: number;
+  cashChangePercentage: number;
+  incomeChangePercentage: number;
+  expensesChangePercentage: number;
+  profitLossChangePercentage: number;
+  dso: number;
+  dpo: number;
+}
+
+interface FinancialRatios {
+  netProfitMargin: number;
+  grossProfitMargin: number;
+  operatingProfitMargin: number;
+  currentRatio: number | null; // Can be null if liabilities are 0
+  quickRatio: number | null; // Can be null if liabilities are 0
+  workingCapital: number;
+  debtToEquity: number | null; // Can be null if equity is 0
+}
+
+interface TrendData {
+  monthlyPLData: ParsedReportData[]; // 12-24 months
+  yoyIncomeChange?: number;
+  yoyProfitChange?: number;
+  avgMonthlyBurn: number; // Used for runway
+  // Add rolling averages, etc. here
+}
+
+interface AgingData {
+  ar: { "0-30": number; "31-60": number; "61-90": number; "90+": number; total: number };
+  ap: { "0-30": number; "31-60": number; "61-90": number; "90+": number; total: number };
+}
+
+// --- Main Controller ---
+
 class QuickbooksDashboardController {
   /**
-   * Main entry point: gets the dashboard data in cash basis using multi-month P&L.
+   * Fetches Chart of Accounts - CRUCIAL for robust parsing.
+   * Cache heavily.
    */
-  async getDashboardData(organizationId: string) {
+  private async fetchChartOfAccounts(
+    organizationId: string,
+    realmId: string
+  ): Promise<ChartOfAccountsMap> {
+    const cacheKey = `qbo:coa:${realmId}`;
+    let cachedCoA = await cacheService.get<ChartOfAccountsMap>(cacheKey);
+    if (cachedCoA) {
+        console.log(`[QB CONTROLLER] Using cached Chart of Accounts for realm ${realmId}`);
+        return cachedCoA;
+    }
+    console.log(`[QB CONTROLLER] Fetching fresh Chart of Accounts for realm ${realmId}`);
+
     try {
-      // 1. Ensure we have an active QBO connection
+      // Ensure MAXRESULTS is high enough or implement pagination if necessary
+      const query = `SELECT * FROM Account WHERE Active = true MAXRESULTS 1000`;
+      const response = await quickbooksApiClient.query(organizationId, realmId, query);
+      const accounts = response.QueryResponse.Account || [];
+
+      // Build a map for easy lookup by ID
+      const coaMap: ChartOfAccountsMap = new Map();
+      accounts.forEach((acc: any) => {
+        coaMap.set(acc.Id, {
+          id: acc.Id,
+          name: acc.Name,
+          accountType: acc.AccountType,
+          accountSubType: acc.AccountSubType,
+          classification: acc.Classification,
+        });
+      });
+
+      console.log(`[QB CONTROLLER] Fetched ${coaMap.size} active accounts for realm ${realmId}. Caching...`);
+      await cacheService.set(cacheKey, coaMap, 3600 * 6); // Cache for 6 hours
+      return coaMap;
+    } catch (err) {
+      console.error(`[QB CONTROLLER] FATAL: Failed to fetch Chart of Accounts for ${realmId}`, err);
+      // It's critical, so throw
+      throw new ApiError(500, "Failed to retrieve critical Chart of Accounts from QuickBooks.");
+    }
+  }
+
+  /**
+   * Fetches a report with caching.
+   */
+  private async fetchReportWithCache(
+    organizationId: string,
+    realmId: string,
+    reportName: "ProfitAndLoss" | "BalanceSheet",
+    params: Record<string, string>
+  ) {
+    const paramString = JSON.stringify(params);
+    const cacheKey = `qbo:report:${realmId}:${reportName}:${paramString}`;
+    let cachedReport = await cacheService.get<any>(cacheKey);
+    if (cachedReport) {
+        console.log(`[QB CONTROLLER] Using cached report ${reportName} for realm ${realmId}, params: ${paramString}`);
+        return cachedReport;
+    }
+    console.log(`[QB CONTROLLER] Fetching fresh report ${reportName} for realm ${realmId}, params: ${paramString}`);
+
+    try {
+      const report = await quickbooksApiClient.getReport(
+        organizationId,
+        realmId,
+        reportName,
+        params
+      );
+      // Basic validation of report structure
+      if (!report || !report.Header || !report.Columns || !report.Rows) {
+          console.warn(`[QB CONTROLLER] Fetched report ${reportName} for realm ${realmId} seems invalid or empty. Returning null.`);
+          await cacheService.set(cacheKey, null, 600); // Cache null result for 10 mins to prevent hammering
+          return null;
+      }
+      console.log(`[QB CONTROLLER] Fetched fresh report ${reportName} successfully for realm ${realmId}. Caching...`);
+      await cacheService.set(cacheKey, report, 3600); // Cache for 1 hour
+      return report;
+    } catch (err) {
+      // Log detailed error from QBO if possible
+      const qboError = (err as any)?.response?.data?.Fault?.Error?.[0];
+      console.error(`[QB CONTROLLER] fetchReport ${reportName} failed for realm ${realmId} with params ${paramString}. Error: ${err instanceof Error ? err.message : String(err)}. QBO Detail: ${qboError?.Detail || 'N/A'}. Returning null.`, err);
+      await cacheService.set(cacheKey, null, 600); // Cache null result for 10 mins
+      return null; // Return null to be checked later
+    }
+  }
+
+  /** Fetches all open invoices. Cache moderately. */
+  private async fetchOpenInvoices(organizationId: string, realmId: string) {
+    const cacheKey = `qbo:openinvoices:${realmId}`;
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+        console.log(`[QB CONTROLLER] Using cached open invoices for realm ${realmId}`);
+        return cached;
+    }
+    console.log(`[QB CONTROLLER] Fetching fresh open invoices for realm ${realmId}`);
+
+    try {
+      // TODO: Implement pagination if > 1000 open invoices is likely
+      const query = `SELECT * FROM Invoice WHERE Balance > '0' STARTPOSITION 1 MAXRESULTS 1000`;
+      const response = await quickbooksApiClient.query(organizationId, realmId, query);
+      const invoices = response.QueryResponse?.Invoice || []; // Safer access
+      console.log(`[QB CONTROLLER] Fetched ${invoices.length} open invoices for realm ${realmId}. Caching...`);
+      await cacheService.set(cacheKey, invoices, 1800); // Cache for 30 mins
+      return invoices;
+    } catch (err) {
+      const qboError = (err as any)?.response?.data?.Fault?.Error?.[0];
+      console.error(`[QB CONTROLLER] Failed to fetch open invoices for ${realmId}. Error: ${err instanceof Error ? err.message : String(err)}. QBO Detail: ${qboError?.Detail || 'N/A'}. Returning empty array.`, err);
+      return []; // Return empty, don't fail the whole dashboard
+    }
+  }
+
+  /** Fetches all open bills. Cache moderately. */
+  private async fetchOpenBills(organizationId: string, realmId: string) {
+    const cacheKey = `qbo:openbills:${realmId}`;
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+        console.log(`[QB CONTROLLER] Using cached open bills for realm ${realmId}`);
+        return cached;
+    }
+    console.log(`[QB CONTROLLER] Fetching fresh open bills for realm ${realmId}`);
+
+     try {
+       // TODO: Implement pagination if > 1000 open bills is likely
+      const query = `SELECT * FROM Bill WHERE Balance > '0' STARTPOSITION 1 MAXRESULTS 1000`;
+      const response = await quickbooksApiClient.query(organizationId, realmId, query);
+      const bills = response.QueryResponse?.Bill || []; // Safer access
+      console.log(`[QB CONTROLLER] Fetched ${bills.length} open bills for realm ${realmId}. Caching...`);
+      await cacheService.set(cacheKey, bills, 1800); // Cache for 30 mins
+      return bills;
+    } catch (err) {
+      const qboError = (err as any)?.response?.data?.Fault?.Error?.[0];
+      console.error(`[QB CONTROLLER] Failed to fetch open bills for ${realmId}. Error: ${err instanceof Error ? err.message : String(err)}. QBO Detail: ${qboError?.Detail || 'N/A'}. Returning empty array.`, err);
+      return []; // Return empty
+    }
+  }
+
+  /** Fetches Customer data. Cache longer. */
+   private async fetchAllCustomers(organizationId: string, realmId: string) {
+     const cacheKey = `qbo:customers:${realmId}`;
+     const cached = await cacheService.get<any[]>(cacheKey);
+     if (cached) {
+         console.log(`[QB CONTROLLER] Using cached customers for realm ${realmId}`);
+         return cached;
+     }
+     console.log(`[QB CONTROLLER] Fetching fresh customers for realm ${realmId}`);
+
+      try {
+        // TODO: Implement pagination if > 1000 customers is likely
+       const query = `SELECT * FROM Customer STARTPOSITION 1 MAXRESULTS 1000`;
+       const response = await quickbooksApiClient.query(organizationId, realmId, query);
+       const customers = response.QueryResponse?.Customer || []; // Safer access
+       console.log(`[QB CONTROLLER] Fetched ${customers.length} customers for realm ${realmId}. Caching...`);
+       await cacheService.set(cacheKey, customers, 3600 * 4); // Cache for 4 hours
+       return customers;
+     } catch (err) {
+       const qboError = (err as any)?.response?.data?.Fault?.Error?.[0];
+       console.error(`[QB CONTROLLER] Failed to fetch customers for ${realmId}. Error: ${err instanceof Error ? err.message : String(err)}. QBO Detail: ${qboError?.Detail || 'N/A'}. Returning empty array.`, err);
+       return []; // Return empty
+     }
+   }
+
+
+  /**
+   * Main entry point: gets enhanced dashboard data.
+   */
+  async getDashboardData(organizationId: string, options: { accountingMethod?: "Cash" | "Accrual" } = {}) {
+    let realmId: string = ''; // Initialize realmId
+
+    try {
+      console.log(`[QB CONTROLLER] Starting getDashboardData for org ${organizationId}`);
+      // 1. Ensure connection and get Realm ID
       const connection = await prisma.quickbooksConnection.findUnique({
         where: { organizationId },
       });
       if (!connection || !connection.isActive) {
+        console.error(`[QB CONTROLLER] No active QuickBooks connection found for org ${organizationId}`);
         throw new ApiError(400, "No active QuickBooks connection");
       }
-      const realmId = connection.realmId;
+      realmId = connection.realmId; // Assign realmId
+      const accountingMethod = options.accountingMethod || "Cash"; // Default to Cash
+      console.log(`[QB CONTROLLER] Using Realm ID: ${realmId}, Accounting Method: ${accountingMethod}`);
 
-      // 2. Calculate relevant date ranges
+      // 2. Date Ranges
       const now = new Date();
-      const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const reportEndDate = new Date(now.getFullYear(), now.getMonth() + 1, 0); // End of current month
+      const reportStartDate = new Date(reportEndDate);
+      reportStartDate.setMonth(reportStartDate.getMonth() - 23); // Start ~23 months back for 24 total
+      reportStartDate.setDate(1);
 
-      const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+      const lastYearThisMonthEnd = new Date(now.getFullYear() - 1, now.getMonth() + 1, 0);
 
-      const sixMonthsAgo = new Date();
-      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
-      sixMonthsAgo.setDate(1);
-
-      // Format function for QBO
       const formatQBDate = (date: Date) => date.toISOString().split("T")[0];
+      console.log(`[QB CONTROLLER] Report Date Range: ${formatQBDate(reportStartDate)} to ${formatQBDate(reportEndDate)}`);
 
-      // 3. Fetch multi-column P&L for the last 6 months (cash basis)
-      //    This single call should return multiple columns, one per month + a "Total" column.
+      // 3. Fetch Core Data Concurrently (using cache)
+      console.log(`[QB CONTROLLER] Starting parallel data fetch for realm ${realmId}...`);
+      // Fetch CoA first, as it's critical for parsing. Throw if it fails.
+      const chartOfAccounts = await this.fetchChartOfAccounts(organizationId, realmId);
+
       const plParams = {
-        start_date: formatQBDate(sixMonthsAgo), // e.g. 6 months back
-        end_date: formatQBDate(currentMonthEnd), // up to current month end
-        accounting_method: "Cash",
-        minorversion: "65",
-
-        // Key param: columns by Month. 
-        // In some QBO docs, you may see `column=Month` or `columns=Month` or `displaycolumns=month`.
-        // Adjust as needed if the QuickBooks library requires a different key name.
-        column: "Month", 
+        start_date: formatQBDate(reportStartDate),
+        end_date: formatQBDate(reportEndDate),
+        accounting_method: accountingMethod,
+        minorversion: "65", // Use a recent minor version
+        summarize_column_by: "Month",
       };
+      const bsParamsCurrent = { date: formatQBDate(reportEndDate), accounting_method: accountingMethod, minorversion: "65" };
+      const bsParamsPrev = { date: formatQBDate(prevMonthEnd), accounting_method: accountingMethod, minorversion: "65" };
+      const bsParamsYoY = { date: formatQBDate(lastYearThisMonthEnd), accounting_method: accountingMethod, minorversion: "65" };
 
-      const multiMonthPLReport = await quickbooksApiClient.getReport(
-        organizationId,
-        realmId,
-        "ProfitAndLoss",
-        plParams
-      );
-
-      // 4. Parse the multi-month P&L into a structured array
-      const monthlyPLData = this.parseMultiMonthProfitAndLoss(multiMonthPLReport);
-
-      // ------------------------------------------------------------------
-      // The array "monthlyPLData" typically goes oldest -> newest month.
-      // For example:
-      // [
-      //   { start: '2023-09-01', end: '2023-09-30', label: 'Sep 2023', income: 5000, expenses: 3000, netIncome: 2000 },
-      //   { start: '2023-10-01', end: '2023-10-31', label: 'Oct 2023', ... },
-      //   ...
-      //   { start: '2024-02-01', end: '2024-02-29', label: 'Feb 2024', income: 9000, expenses: 7000, netIncome: 2000 }
-      // ]
-      // The last entry is presumably the "current month", 
-      // the second-to-last is the "previous month".
-      // ------------------------------------------------------------------
-
-      if (!monthlyPLData.length) {
-        throw new ApiError(400, "No monthly data returned from P&L");
-      }
-
-      // Identify the current and previous months in that array
-      const currentMonthPL = monthlyPLData[monthlyPLData.length - 1]; // last
-      const prevMonthPL = monthlyPLData.length > 1
-        ? monthlyPLData[monthlyPLData.length - 2]
-        : null; // second-to-last if we have it
-
-      // Extract the final current month's Income, Expenses, Profit
-      const currentIncome = currentMonthPL.income;
-      const currentExpenses = currentMonthPL.expenses;
-      const currentProfitLoss = currentMonthPL.netIncome;
-
-      // If we have a previous month
-      let prevIncome = 0, prevExpenses = 0, prevProfitLoss = 0;
-      if (prevMonthPL) {
-        prevIncome = prevMonthPL.income;
-        prevExpenses = prevMonthPL.expenses;
-        prevProfitLoss = prevMonthPL.netIncome;
-      }
-
-      // 5. Fetch the current month & previous month BalanceSheet (cash basis) for "cash" amounts
-      //    (We do this in two calls, one for each month, for an apples-to-apples comparison.)
-      const [ cashBalance, prevMonthCashBalance ] = await Promise.all([
-        this.fetchCashBalance(
-          organizationId,
-          realmId,
-          currentMonthStart,
-          currentMonthEnd
-        ),
-        this.fetchCashBalance(
-          organizationId,
-          realmId,
-          prevMonthStart,
-          prevMonthEnd
-        ),
-      ]);
-
-      // 6. Compute change percentages
-      const incomeChangePercentage = this.percentageChange(prevIncome, currentIncome);
-      const expensesChangePercentage = this.percentageChange(prevExpenses, currentExpenses);
-      const profitLossChangePercentage = this.percentageChange(
-        prevProfitLoss,
-        currentProfitLoss,
-        true // absolute denominator
-      );
-
-      // "cash" change can be based on actual balances from the two BalanceSheets
-      let cashChangePercentage = 0;
-      if (prevMonthCashBalance > 0) {
-        cashChangePercentage = Math.round(
-          ((cashBalance - prevMonthCashBalance) / prevMonthCashBalance) * 100
-        );
-      } else {
-        // fallback: compare net incomes
-        cashChangePercentage = this.percentageChange(prevProfitLoss, currentProfitLoss, true);
-      }
-
-      // 7. Build the final "cash flow" data from the monthly P&L we already have.
-      //    This is basically the same as monthlyPLData but renamed "month" for your final structure.
-      //    The user wants 6 months, but if QBO returns fewer, we show what we have.
-      const cashFlowData = monthlyPLData.map((pl) => ({
-        month: pl.label,
-        income: pl.income,
-        expenses: pl.expenses,
-        profit: pl.netIncome,
-      }));
-
-      // 8. Fetch current month Invoices + Purchases for recent activity and top customers
-      const currentInvoices = await this.fetchInvoices(
-        organizationId,
-        realmId,
-        currentMonthStart,
-        currentMonthEnd
-      );
-      const currentPurchases = await this.fetchPurchases(
-        organizationId,
-        realmId,
-        currentMonthStart,
-        currentMonthEnd
-      );
-
-      // 9. Build "recent activity" (last 5 items) 
-      const customers = await this.fetchAllCustomers(organizationId, realmId);
-      const recentActivity = this.buildRecentActivity(currentInvoices, currentPurchases, customers);
-
-      // 10. Build "top customers" by summing paid amounts in the current Invoices
-      const topCustomers = this.buildTopCustomers(currentInvoices, customers);
-
-      // 11. Extract top expense categories from the current month's P&L data 
-      //    or from the entire multi-month P&L. We'll do "current month" only
-      //    by looking at the "Expenses" sub-rows for that column. 
-      //    We already have multiMonthPLReport. 
-      //    We'll do a dedicated method that tries to parse the P&L rows for the last column only.
-      let topExpenseCategories = this.extractExpenseCategoriesForColumn(
+      // Fetch remaining data concurrently
+      const [
         multiMonthPLReport,
-        monthlyPLData.length - 1 // index of the last column, ignoring "label" and "total" columns
-      );
-      if (!topExpenseCategories.length) {
-        // fallback to transaction-based grouping if the P&L structure is incomplete
-        topExpenseCategories = this.buildExpenseCategoriesFromPurchases(currentPurchases);
+        currentMonthBSReport,
+        prevMonthBSReport,
+        yoyMonthBSReport,
+        openInvoices,
+        openBills,
+        customers,
+      ] = await Promise.all([
+        this.fetchReportWithCache(organizationId, realmId, "ProfitAndLoss", plParams),
+        this.fetchReportWithCache(organizationId, realmId, "BalanceSheet", bsParamsCurrent),
+        this.fetchReportWithCache(organizationId, realmId, "BalanceSheet", bsParamsPrev),
+        this.fetchReportWithCache(organizationId, realmId, "BalanceSheet", bsParamsYoY),
+        this.fetchOpenInvoices(organizationId, realmId),
+        this.fetchOpenBills(organizationId, realmId),
+        this.fetchAllCustomers(organizationId, realmId),
+      ]);
+      console.log(`[QB CONTROLLER] Parallel data fetch completed for realm ${realmId}.`);
+
+
+      // --- DEBUG LOGGING AND PRE-PARSE CHECKS ---
+      console.log('--- [DEBUG] Raw Report Data Start ---');
+      // Log key details, avoid logging full PII/financial data in production if possible
+      console.log(`[DEBUG] Realm ${realmId}: Raw multiMonthPLReport Status: ${multiMonthPLReport ? 'Fetched' : 'FAILED/NULL'}`);
+      if(multiMonthPLReport) {
+          console.log(`[DEBUG] Realm ${realmId}: Raw multiMonthPLReport Header:`, JSON.stringify(multiMonthPLReport.Header, null, 2));
+          console.log(`[DEBUG] Realm ${realmId}: Raw multiMonthPLReport Row Count:`, multiMonthPLReport.Rows?.Row?.length ?? 0);
       }
 
-      // 12. Profit margin (profit as % of income) for the current month
-      let profitMargin = 0;
-      if (currentIncome !== 0) {
-        profitMargin = Math.round((currentProfitLoss / currentIncome) * 100);
+      console.log(`[DEBUG] Realm ${realmId}: Raw currentMonthBSReport Status: ${currentMonthBSReport ? 'Fetched' : 'FAILED/NULL'}`);
+      if(currentMonthBSReport) {
+          console.log(`[DEBUG] Realm ${realmId}: Raw currentMonthBSReport Header:`, JSON.stringify(currentMonthBSReport.Header, null, 2));
+          console.log(`[DEBUG] Realm ${realmId}: Raw currentMonthBSReport Row Count:`, currentMonthBSReport.Rows?.Row?.length ?? 0);
       }
+      console.log(`[DEBUG] Realm ${realmId}: Chart of Accounts size:`, chartOfAccounts.size);
+      console.log('--- [DEBUG] Raw Report Data End ---');
 
-      // Compile final results
-      return {
-        cash: {
-          balance: cashBalance,
-          changePercentage: cashChangePercentage,
-        },
-        income: {
-          mtd: currentIncome,
-          changePercentage: incomeChangePercentage,
-        },
-        expenses: {
-          mtd: currentExpenses,
-          changePercentage: expensesChangePercentage,
-        },
-        profitLoss: {
-          mtd: currentProfitLoss,
-          changePercentage: profitLossChangePercentage,
-        },
-        profitMargin,
-        recentActivity,
-        cashFlow: cashFlowData,
-        topCustomers,
-        topExpenseCategories,
-        source: "quickbooks",
-      };
-    } catch (err) {
-      console.error(`[QB CONTROLLER] getDashboardData error:`, err);
-      if (err instanceof ApiError) {
-        throw err;
+      // Check if essential reports were actually fetched and are valid structures
+      if (!multiMonthPLReport || !multiMonthPLReport.Header || !multiMonthPLReport.Rows) {
+         console.error(`[QB CONTROLLER] FATAL: Failed to retrieve a valid ProfitAndLoss report structure for realm ${realmId}. Fetch returned null or invalid report.`);
+         throw new ApiError(500, "Failed to retrieve essential Profit and Loss report from QuickBooks. Check API connectivity or report parameters.");
       }
-      throw new ApiError(
-        500,
-        `Error retrieving QuickBooks dashboard data: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // Helper: fetch "cash" balance from BalanceSheet (cash basis) 
-  // for a given date range.
-  // ------------------------------------------------------------------
-  private async fetchCashBalance(
-    organizationId: string,
-    realmId: string,
-    startDate: Date,
-    endDate: Date
-  ) {
-    try {
-      const params = {
-        start_date: startDate.toISOString().split("T")[0],
-        end_date: endDate.toISOString().split("T")[0],
-        accounting_method: "Cash",
-        minorversion: "65",
-      };
-      const bsReport = await quickbooksApiClient.getReport(
-        organizationId,
-        realmId,
-        "BalanceSheet",
-        params
-      );
-      return this.extractCashFromBalanceSheet(bsReport);
-    } catch (err) {
-      console.warn(`[QB CONTROLLER] BalanceSheet fetch failed; returning 0.`, err);
-      return 0;
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // Helper: single multi-month P&L parse method.
-  // Returns an array of monthly data: 
-  //   [ { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', label: 'MMM YYYY', income, expenses, netIncome }, ... ]
-  // ------------------------------------------------------------------
-  private parseMultiMonthProfitAndLoss(report: any) {
-    if (!report || !report.Columns?.Column || !report.Rows?.Row) return [];
-
-    const columnInfo = report.Columns.Column; // e.g. array of columns
-    const rows = report.Rows.Row;
-
-    // First, figure out how many "month" columns we actually have 
-    // (excluding the first label column & possible last "Total" column).
-    // Typically:
-    //   column[0] = "Account" or "Category" label
-    //   column[1..N] = months
-    //   column[N+1] = "Total"
-    // But we must check the "ColType" or "ColTitle" or "MetaData" to be sure.
-    //
-    // We'll build an array describing each "month" column: { indexInColData, label, startPeriod, endPeriod, isTotal? }
-
-    const parsedColumns: Array<{
-      indexInColData: number;
-      label: string;           // e.g. "Sep 2023" 
-      startPeriod?: string;    // from MetaData
-      endPeriod?: string;      // from MetaData
-      isTotal?: boolean;
-    }> = [];
-
-    // Start from i=1 because i=0 might be the label column
-    for (let i = 1; i < columnInfo.length; i++) {
-      const col = columnInfo[i];
-      const colTitle = col.ColTitle || "";
-      const meta = col.MetaData || [];
-
-      // Try to detect if it's a "Total" column
-      const colType = col.ColType || "";
-      const maybeIsTotal =
-        colType.toLowerCase() === "total" ||
-        /total/i.test(colTitle);
-
-      // Some QBO responses mark the "Total" column with a specific "type" or "id" in `MetaData`.
-      // We'll do a simpler approach: if the last column's title includes "Total," 
-      // or if colType is "Total", we treat it as the total column.
-      parsedColumns.push({
-        indexInColData: i,
-        label: colTitle,
-        startPeriod: meta.find((m: any) => m.Name === "StartPeriod")?.Value,
-        endPeriod: meta.find((m: any) => m.Name === "EndPeriod")?.Value,
-        isTotal: maybeIsTotal,
-      });
-    }
-
-    // If the very last one is "Total", we ignore it for monthly breakdown
-    // So let's separate them into monthly columns vs. total column
-    const columnsExcludingTotal = parsedColumns.filter((c) => !c.isTotal);
-
-    // We'll parse Income, Expenses, NetIncome from the P&L rows for each column
-    // Then build an array of month-level data
-    // QBO typically has a row for "Income", a row for "Expenses", a row for "NetIncome".
-    // But sometimes those are sub-rows or labeled differently. We'll handle the group or type checks.
-
-    // We can store the final array of:
-    //   { start: string, end: string, label: string, income: number, expenses: number, netIncome: number }
-    const result: Array<{
-      start: string;
-      end: string;
-      label: string;
-      income: number;
-      expenses: number;
-      netIncome: number;
-    }> = [];
-
-    // For each of the columns (which presumably are in chronological order),
-    // we want to see how the "Income" row, "Expenses" row, and "Net Income" row parse out.
-
-    // We'll read the entire row data first
-    let incomeRow: any = null;
-    let expensesRow: any = null;
-    let netIncomeRow: any = null;
-
-    // QBO might produce them as top-level row.group === "Income"/"Expenses"/"NetIncome"
-    // or row.type === "Income"/"Expenses"/"NetIncome".
-    // Or the "Net Income" might appear as row group "NetOperatingIncome" vs "NetIncome". 
-    // We'll do a best-effort find.
-    for (const row of rows) {
-      const headerVal = row.Header?.ColData?.[0]?.value || "";
-      const group = row.group || row.type || "";
-
-      // Income row
-      if (
-        group === "Income" ||
-        headerVal.includes("Total Income") ||
-        headerVal === "Income"
-      ) {
-        incomeRow = row;
+       if (!currentMonthBSReport || !currentMonthBSReport.Header || !currentMonthBSReport.Rows) {
+         console.error(`[QB CONTROLLER] FATAL: Failed to retrieve a valid current BalanceSheet report structure for realm ${realmId}. Fetch returned null or invalid report.`);
+         throw new ApiError(500, "Failed to retrieve essential Balance Sheet report from QuickBooks. Check API connectivity or report parameters.");
       }
-      // Expenses row
-      if (
-        group === "Expenses" ||
-        headerVal.includes("Total Expenses") ||
-        headerVal === "Expenses"
-      ) {
-        expensesRow = row;
-      }
-      // Net Income row
-      if (
-        group === "NetIncome" ||
-        headerVal.includes("Net Income") ||
-        headerVal === "NetIncome"
-      ) {
-        netIncomeRow = row;
-      }
-    }
+      // --- END OF PRE-PARSE CHECKS ---
 
-    // We'll parse each monthly column
-    for (const colDef of columnsExcludingTotal) {
-      const incomeVal = this.getAmountFromRowAndCol(incomeRow, colDef.indexInColData);
-      const expenseVal = this.getAmountFromRowAndCol(expensesRow, colDef.indexInColData);
-      let netVal = this.getAmountFromRowAndCol(netIncomeRow, colDef.indexInColData);
 
-      // If netVal is 0 and we have income/expenses, compute it
-      if (netVal === 0 && (incomeVal !== 0 || expenseVal !== 0)) {
-        netVal = incomeVal - expenseVal;
-      }
-
-      result.push({
-        start: colDef.startPeriod || "",
-        end: colDef.endPeriod || "",
-        label: colDef.label || "Period",
-        income: incomeVal,
-        expenses: expenseVal,
-        netIncome: netVal,
-      });
-    }
-
-    return result;
-  }
-
-  // Helper to read a numeric value from a row's "Summary.ColData[i]" 
-  // or from row.ColData (depending on QBO structure).
-  private getAmountFromRowAndCol(row: any, colIndex: number) {
-    if (!row) return 0;
-
-    // Some rows hold the numeric data in row.Summary.ColData
-    // Others hold them in row.ColData. 
-    // Usually, for a "group" row (like "Income" with a summary), it's row.Summary.ColData
-    // For a line item row, it's row.ColData. 
-    // We'll check Summary first, fallback to ColData.
-    let valStr: string | undefined;
-
-    if (row.Summary?.ColData?.[colIndex]?.value) {
-      valStr = row.Summary.ColData[colIndex].value;
-    } else if (row.ColData?.[colIndex]?.value) {
-      valStr = row.ColData[colIndex].value;
-    }
-
-    const val = parseFloat(valStr || "0");
-    return isNaN(val) ? 0 : val;
-  }
-
-  // ------------------------------------------------------------------
-  // Extract the "cash" (bank accounts, etc.) from a BalanceSheet (cash).
-  // ------------------------------------------------------------------
-  private extractCashFromBalanceSheet(report: any): number {
-    if (!report?.Rows?.Row) return 0;
-    const rows = report.Rows.Row;
-    let totalCash = 0;
-
-    // Typically, we look for the "Assets" > "Current Assets" > "Bank Accounts"
-    const assetsSection = rows.find(
-      (r: any) =>
-        r.group === "Assets" ||
-        (r.Header?.ColData?.[0]?.value === "Assets")
-    );
-    if (!assetsSection?.Rows?.Row) return 0;
-
-    const currentAssets = assetsSection.Rows.Row.find(
-      (r: any) =>
-        r.group === "CurrentAssets" ||
-        (r.Header?.ColData?.[0]?.value === "Current Assets")
-    );
-    if (!currentAssets?.Rows?.Row) return 0;
-
-    // 1) Try the "Bank Accounts" group
-    const bankSection = currentAssets.Rows.Row.find(
-      (r: any) =>
-        r.group === "BankAccounts" ||
-        (r.Header?.ColData?.[0]?.value === "Bank Accounts")
-    );
-    if (bankSection?.Summary?.ColData) {
-      const valCol = bankSection.Summary.ColData.find(
-        (c: any) => c.value && !isNaN(parseFloat(c.value))
-      );
-      if (valCol) {
-        totalCash = parseFloat(valCol.value);
-      }
-    }
-
-    // 2) If we still have 0, look for any row containing "cash" or "bank"
-    if (totalCash === 0) {
-      currentAssets.Rows.Row.forEach((r: any) => {
-        if (r.ColData?.length > 1) {
-          const name = r.ColData[0].value?.toLowerCase() || "";
-          const amt = parseFloat(r.ColData[1].value || "0");
-          if ((name.includes("cash") || name.includes("bank")) && !isNaN(amt)) {
-            totalCash += amt;
-          }
-        }
-      });
-    }
-
-    return totalCash;
-  }
-
-  // ------------------------------------------------------------------
-  // Query Invoices in a given date range
-  // ------------------------------------------------------------------
-  private async fetchInvoices(
-    organizationId: string,
-    realmId: string,
-    startDate: Date,
-    endDate: Date
-  ) {
-    const query = `
-      SELECT * 
-      FROM Invoice 
-      WHERE TxnDate >= '${startDate.toISOString().split("T")[0]}' 
-        AND TxnDate <= '${endDate.toISOString().split("T")[0]}'
-    `;
-    const response = await quickbooksApiClient.query(organizationId, realmId, query);
-    return response.QueryResponse.Invoice || [];
-  }
-
-  // ------------------------------------------------------------------
-  // Query Purchases in a given date range
-  // ------------------------------------------------------------------
-  private async fetchPurchases(
-    organizationId: string,
-    realmId: string,
-    startDate: Date,
-    endDate: Date
-  ) {
-    const query = `
-      SELECT * 
-      FROM Purchase
-      WHERE TxnDate >= '${startDate.toISOString().split("T")[0]}'
-        AND TxnDate <= '${endDate.toISOString().split("T")[0]}'
-    `;
-    const response = await quickbooksApiClient.query(organizationId, realmId, query);
-    return response.QueryResponse.Purchase || [];
-  }
-
-  // ------------------------------------------------------------------
-  // Fetch all customers (used for naming in "recent activity" or "top customers")
-  // ------------------------------------------------------------------
-  private async fetchAllCustomers(organizationId: string, realmId: string) {
-    const query = `SELECT * FROM Customer`;
-    const response = await quickbooksApiClient.query(organizationId, realmId, query);
-    return response.QueryResponse.Customer || [];
-  }
-
-  // ------------------------------------------------------------------
-  // Build "recent activity" from invoices and purchases 
-  // Return the last 5 sorted by TxnDate desc
-  // ------------------------------------------------------------------
-  private buildRecentActivity(invoices: any[], purchases: any[], customers: any[]) {
-    const activities = [
-      ...invoices
-        .filter((inv) => {
-          const total = parseFloat(inv.TotalAmt || "0");
-          const balance = parseFloat(inv.Balance || "0");
-          return total - balance > 0; // partially or fully paid
-        })
-        .map((invoice) => {
-          const paidAmt = parseFloat(invoice.TotalAmt || "0") - parseFloat(invoice.Balance || "0");
-          const custName = invoice.CustomerRef
-            ? customers.find((c) => c.Id === invoice.CustomerRef.value)?.DisplayName || "Customer"
-            : "Customer";
-          const isFullyPaid = parseFloat(invoice.Balance || "0") === 0;
-          const status = isFullyPaid ? "fully" : "partially";
-
-          return {
-            id: invoice.Id,
-            type: "INVOICE_PAID",
-            description: `Invoice #${invoice.DocNumber || ""} ${status} paid by ${custName}`,
-            date: new Date(invoice.TxnDate),
-            amount: paidAmt,
-          };
-        }),
-      ...purchases.map((pur) => {
-        const payeeName = pur.EntityRef?.name || "Vendor";
-        return {
-          id: pur.Id,
-          type: "EXPENSE_PAID",
-          description: pur.PaymentType
-            ? `Paid ${pur.PaymentType} to ${payeeName}`
-            : `Expense paid to ${payeeName}`,
-          date: new Date(pur.TxnDate),
-          amount: -parseFloat(pur.TotalAmt || "0"),
-        };
-      }),
-    ];
-
-    // Sort by date desc, take last 5
-    return activities
-      .sort((a, b) => b.date.getTime() - a.date.getTime())
-      .slice(0, 5);
-  }
-
-  // ------------------------------------------------------------------
-  // Build "top customers" from the paid portion of Invoices
-  // ------------------------------------------------------------------
-  private buildTopCustomers(invoices: any[], customers: any[]) {
-    const revenueMap = new Map<string, { id: string; name: string; revenue: number }>();
-    for (const inv of invoices) {
-      if (inv.CustomerRef) {
-        const cid = inv.CustomerRef.value;
-        if (!revenueMap.has(cid)) {
-          const cust = customers.find((c) => c.Id === cid);
-          revenueMap.set(cid, {
-            id: cid,
-            name: cust ? cust.DisplayName || "Customer" : "Customer",
-            revenue: 0,
+      // --- Enhanced P&L Row Debugging (Added Here) ---
+      if (multiMonthPLReport && multiMonthPLReport.Rows && multiMonthPLReport.Rows.Row) {
+          console.log(`[DEBUG] Realm ${realmId}: First few P&L Rows Structure (Max 5 rows):`);
+          const rowsToShow = multiMonthPLReport.Rows.Row.slice(0, 5); // Log first 5 rows
+          rowsToShow.forEach((row: any, index: number) => {
+              console.log(`  [P&L Row ${index}]: Type: ${row.type}, Header?: ${!!row.Header}, Group?: ${row.group}`);
+              if (row.Header && row.Header.ColData) {
+                  console.log(`    Header Titles: ${row.Header.ColData.map((cd: any) => cd.value).join(' | ')}`);
+              } else if (row.ColData) {
+                  // Attempt to find a 'title' column (usually the first one)
+                  const title = row.ColData[0]?.value || 'N/A';
+                  const values = row.ColData.slice(1).map((cd: any) => cd.value).join(' | ');
+                  console.log(`    Row Data: Title='${title}', Values='${values}'`);
+              } else if (row.Rows && row.Rows.Row) {
+                  // This indicates a section/group row
+                  console.log(`    Contains Sub-Rows: ${row.Rows.Row.length}, Title: ${row.Summary?.ColData?.[0]?.value || row.Header?.ColData?.[0]?.value || 'N/A'}`);
+              } else {
+                  console.log(`    Row content structure not immediately recognized:`, JSON.stringify(row)); // Keep it concise
+              }
           });
-        }
-        const paidAmt = parseFloat(inv.TotalAmt || "0") - parseFloat(inv.Balance || "0");
-        revenueMap.get(cid)!.revenue += paidAmt;
-      }
-    }
-
-    return Array.from(revenueMap.values())
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 5);
-  }
-
-  // ------------------------------------------------------------------
-  // Extract top expense categories from the "Expenses" row in a multi-column P&L
-  // for a specific column index (e.g. the last column for "current month").
-  // If the user wants the entire multi-month total, you could pick the "Total" column 
-  // instead. This example just picks the final monthly column.
-  // ------------------------------------------------------------------
-  private extractExpenseCategoriesForColumn(report: any, colIndex: number) {
-    // We'll look for the top-level "Expenses" row, 
-    // then each subRow with a label and a numeric value in colIndex.
-    const results: Array<{ category: string; amount: number }> = [];
-    if (!report?.Rows?.Row) return results;
-
-    // Find the "Expenses" group
-    const expensesRow = report.Rows.Row.find(
-      (r: any) =>
-        r.group === "Expenses" ||
-        r.Header?.ColData?.[0]?.value === "Expenses" ||
-        (r.Header?.ColData?.[0]?.value || "").includes("Total Expenses")
-    );
-    if (!expensesRow?.Rows?.Row) {
-      return results;
-    }
-
-    // In that group, each subRow might be a category line with "ColData"
-    // We'll read colData[0] for the category name, colData[colIndex] for the numeric
-    for (const subRow of expensesRow.Rows.Row) {
-      // Some subRows might have their own .Rows -> indicates subcategories
-      if (subRow.ColData?.length > colIndex) {
-        const catName = subRow.ColData[0].value || "";
-        if (catName.toLowerCase().includes("total")) {
-          continue; // skip "Total" lines
-        }
-        const valStr = subRow.ColData[colIndex]?.value || "0";
-        const valNum = parseFloat(valStr);
-        if (!isNaN(valNum) && valNum !== 0) {
-          results.push({ category: catName, amount: valNum });
-        }
-      }
-
-      // If there's a nested .Rows, parse them similarly
-      if (subRow.Rows?.Row) {
-        for (const nestedRow of subRow.Rows.Row) {
-          if (nestedRow.ColData?.length > colIndex) {
-            const catName = nestedRow.ColData[0].value || "";
-            if (catName.toLowerCase().includes("total")) {
-              continue;
-            }
-            const valStr = nestedRow.ColData[colIndex]?.value || "0";
-            const valNum = parseFloat(valStr);
-            if (!isNaN(valNum) && valNum !== 0) {
-              results.push({ category: catName, amount: valNum });
-            }
+          if (multiMonthPLReport.Rows.Row.length > 5) {
+              console.log(`  ... (and ${multiMonthPLReport.Rows.Row.length - 5} more rows)`);
           }
+      } else {
+           console.log(`[DEBUG] Realm ${realmId}: No P&L Rows found in the raw report structure (multiMonthPLReport.Rows.Row is missing or empty).`);
+      }
+      // --- End of Enhanced Debugging ---
+
+
+      // 4. Parse Reports using CoA for robustness
+      console.log(`[QB CONTROLLER] Attempting to parse P&L report for realm ${realmId}...`);
+      let parsedPLData: ParsedReportData[] | null = null; // Initialize as potentially null
+      try {
+         parsedPLData = parseMultiMonthProfitAndLoss(multiMonthPLReport, chartOfAccounts);
+         // More detailed logging of the result
+         console.log(`[QB CONTROLLER] P&L parsing completed for realm ${realmId}. Result type: ${typeof parsedPLData}, IsArray: ${Array.isArray(parsedPLData)}, Length: ${parsedPLData?.length ?? 'N/A'}`);
+         if (Array.isArray(parsedPLData) && parsedPLData.length > 0) {
+             console.log(`[DEBUG] Realm ${realmId}: First element of parsedPLData:`, JSON.stringify(parsedPLData[0], null, 2));
+         } else if (Array.isArray(parsedPLData)) {
+             console.warn(`[QB CONTROLLER] P&L Parser for realm ${realmId} returned an EMPTY array. Check the P&L Rows Structure logs above and the parser logic.`);
+         } else {
+              console.error(`[QB CONTROLLER] P&L Parser for realm ${realmId} returned non-array result:`, parsedPLData);
+         }
+      } catch (parseError) {
+          console.error(`[QB CONTROLLER] *** CRITICAL ERROR during P&L parsing for realm ${realmId}:`, parseError);
+          // Decide if this is fatal. For core metrics, it likely is.
+          throw new ApiError(500, `Internal error parsing Profit and Loss data: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+      }
+
+
+      console.log(`[QB CONTROLLER] Attempting to parse Current BS report for realm ${realmId}...`);
+      let parsedCurrentBS: ParsedBalanceSheet | null = null; // Initialize as potentially null
+       try {
+          parsedCurrentBS = parseBalanceSheet(currentMonthBSReport, chartOfAccounts);
+          console.log(`[QB CONTROLLER] Current BS parsing completed for realm ${realmId}. Result is object: ${typeof parsedCurrentBS === 'object' && parsedCurrentBS !== null}`);
+       } catch (parseError) {
+           console.error(`[QB CONTROLLER] *** CRITICAL ERROR during Current BS parsing for realm ${realmId}:`, parseError);
+           throw new ApiError(500, `Internal error parsing Balance Sheet data: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+       }
+
+      // Handle potentially null previous/YoY reports gracefully during parsing
+      console.log(`[QB CONTROLLER] Parsing Prev/YoY BS reports for realm ${realmId}...`);
+      let parsedPrevBS: ParsedBalanceSheet | null = null;
+      let parsedYoYBS: ParsedBalanceSheet | null = null;
+       try {
+           parsedPrevBS = prevMonthBSReport ? parseBalanceSheet(prevMonthBSReport, chartOfAccounts) : null;
+           parsedYoYBS = yoyMonthBSReport ? parseBalanceSheet(yoyMonthBSReport, chartOfAccounts) : null;
+           console.log(`[QB CONTROLLER] Prev BS parsed: ${!!parsedPrevBS}, YoY BS parsed: ${!!parsedYoYBS}`);
+       } catch (parseError) {
+            console.warn(`[QB CONTROLLER] Warning: Error parsing previous or YoY Balance Sheet for realm ${realmId}. Some comparison metrics might be unavailable. Error:`, parseError);
+            // Don't necessarily throw, allow dashboard to load with potentially missing comparison data
+       }
+
+
+      // Check parsed data before calculation (Make checks more robust)
+      if (!parsedPLData || !Array.isArray(parsedPLData) || parsedPLData.length === 0) {
+          console.error(`[QB CONTROLLER] Error for realm ${realmId}: parsedPLData is invalid (null, not an array, or empty) after parsing. Report may be empty or parser failed. Check the detailed P&L row/parser logs above.`);
+          // THE ACTUAL FIX NEEDS TO BE IN quickbooksReportParser.ts in the parseMultiMonthProfitAndLoss function
+          throw new ApiError(500, "Failed to process Profit and Loss data for metric calculation. Parser returned empty data. Check server logs for details."); // Line 380ish
+      }
+      if (!parsedCurrentBS || typeof parsedCurrentBS !== 'object') {
+           console.error(`[QB CONTROLLER] Error for realm ${realmId}: parsedCurrentBS is invalid (null or not an object) after parsing. Report may be empty or parser failed. Check server logs for details.`);
+           // THE ACTUAL FIX NEEDS TO BE IN quickbooksReportParser.ts in the parseBalanceSheet function
+           throw new ApiError(500, "Failed to process Balance Sheet data for metric calculation. Parser returned invalid data. Check server logs for details.");
+      }
+      console.log(`[QB CONTROLLER] Parsed data validation passed for realm ${realmId}. Proceeding to calculations.`);
+
+      // 5. Calculate Metrics, Ratios, Trends, Aging, Runway
+      console.log(`[QB CONTROLLER] Calculating core metrics for realm ${realmId}...`);
+      // Ensure calculateCoreMetrics handles null prev/yoy gracefully if they failed parsing
+      const coreMetrics = calculateCoreMetrics(parsedPLData, parsedCurrentBS, parsedPrevBS, parsedYoYBS);
+      console.log(`[QB CONTROLLER] Calculating financial ratios for realm ${realmId}...`);
+      // Use optional chaining for safety
+      const lastPLData = parsedPLData[parsedPLData.length - 1];
+      const ratios = calculateFinancialRatios(coreMetrics, lastPLData?.netIncome || 0);
+      console.log(`[QB CONTROLLER] Calculating trends for realm ${realmId}...`);
+      const trends = calculateTrends(parsedPLData, coreMetrics); // Ensure this handles potentially short PL data history
+      console.log(`[QB CONTROLLER] Calculating aging for realm ${realmId}...`);
+      const aging = calculateAging(openInvoices, openBills);
+      console.log(`[QB CONTROLLER] Calculating runway for realm ${realmId}...`);
+      const runwayMonths = calculateRunway(coreMetrics.cashBalance, trends.avgMonthlyBurn);
+      console.log(`[QB CONTROLLER] Core calculations completed for realm ${realmId}.`);
+
+      // 6. Forecasting (Backend Logic)
+      console.log(`[QB CONTROLLER] Generating cash flow forecast for realm ${realmId}...`);
+      const cashFlowForecast = await forecastService.generateCashFlowForecast({
+        historicalPL: trends.monthlyPLData,
+        currentAR: aging.ar,
+        currentAP: aging.ap,
+        currentCash: coreMetrics.cashBalance,
+      });
+      console.log(`[QB CONTROLLER] Cash flow forecast generated for realm ${realmId}.`);
+
+      // 7. Insights & Benchmarking (Backend Logic)
+      console.log(`[QB CONTROLLER] Generating insights and benchmarks for realm ${realmId}...`);
+      const userIndustry = await benchmarkService.getUserIndustry(organizationId);
+      const benchmarks = await benchmarkService.getBenchmarks(userIndustry);
+      const businessInsights = await insightsService.generateInsights({
+         metrics: coreMetrics, ratios, trends, aging, runway: runwayMonths, forecast: cashFlowForecast, benchmarks
+      });
+      console.log(`[QB CONTROLLER] Insights and benchmarks generated for realm ${realmId}.`);
+
+       // 8. Build supporting lists
+       console.log(`[QB CONTROLLER] Building supporting lists for realm ${realmId}...`);
+      const recentActivity = buildRecentActivity(openInvoices, openBills, customers);
+      const topCustomers = buildTopCustomers(openInvoices, customers);
+      // extractTopExpenseCategories might need the raw report, ensure it handles potential nulls/empties
+      // Also ensure index is valid
+      const plLastIndex = parsedPLData.length > 0 ? parsedPLData.length - 1 : -1; // Use -1 if empty
+      const topExpenseCategories = multiMonthPLReport && plLastIndex !== -1
+          ? extractTopExpenseCategories(multiMonthPLReport, chartOfAccounts, plLastIndex)
+          : [];
+      console.log(`[QB CONTROLLER] Supporting lists built for realm ${realmId}.`);
+
+
+      // 9. Assemble Final Payload
+      console.log(`[QB CONTROLLER] Assembling final dashboard payload for realm ${realmId}.`);
+      const dashboardData = {
+        // Basic Metrics
+        cash: { balance: coreMetrics.cashBalance, changePercentage: coreMetrics.cashChangePercentage },
+        income: { mtd: coreMetrics.currentIncome, changePercentage: coreMetrics.incomeChangePercentage },
+        expenses: { mtd: coreMetrics.currentExpenses, changePercentage: coreMetrics.expensesChangePercentage },
+        profitLoss: { mtd: coreMetrics.currentProfitLoss, changePercentage: coreMetrics.profitLossChangePercentage },
+
+        // Key Ratios & Health
+        margins: { netProfitPercent: ratios.netProfitMargin, grossProfitPercent: ratios.grossProfitMargin, operatingProfitPercent: ratios.operatingProfitMargin },
+        liquidity: { currentRatio: ratios.currentRatio, quickRatio: ratios.quickRatio, workingCapital: ratios.workingCapital },
+        solvency: { debtToEquity: ratios.debtToEquity },
+        efficiency: { dso: coreMetrics.dso, dpo: coreMetrics.dpo },
+        agingAR: aging.ar,
+        agingAP: aging.ap,
+        runwayMonths: runwayMonths,
+
+        // Trends
+        cashFlowHistory: trends.monthlyPLData,
+
+        // Forecast
+        cashFlowForecast: cashFlowForecast,
+
+        // Insights & Context
+        businessInsights: businessInsights,
+        industryBenchmarks: benchmarks,
+
+        // Supporting Lists
+        recentActivity: recentActivity.slice(0, 5),
+        topCustomers: topCustomers.slice(0, 5),
+        topExpenseCategories: topExpenseCategories.slice(0, 5),
+
+        // Advanced/Detailed Data
+        advancedMetrics: {
+          accountsReceivable: coreMetrics.totalAR,
+          accountsPayable: coreMetrics.totalAP,
+          yoyIncomeChange: trends.yoyIncomeChange,
+          yoyProfitChange: trends.yoyProfitChange,
+          yoyCashBalance: coreMetrics.yoyCashBalance,
+        },
+
+        // Metadata
+        dataSource: "quickbooks",
+        accountingMethod: accountingMethod,
+        lastRefreshed: new Date().toISOString(),
+      };
+      console.log(`[QB CONTROLLER] Dashboard data successfully assembled for org ${organizationId}, realm ${realmId}.`);
+      return dashboardData;
+
+    } catch (err) {
+      // Ensure realmId is available if the error happened after fetching connection
+      const realmInfo = realmId ? ` for realm ${realmId}` : '';
+      console.error(`[QB CONTROLLER] *** ERROR in getDashboardData for org ${organizationId}${realmInfo}:`, err instanceof Error ? err.message : String(err), err);
+
+      if (err instanceof ApiError) {
+        if ((err as any).details) {
+          console.error('[QB CONTROLLER] QuickBooks API Error Details (Dashboard):', (err as any).details);
         }
+        err.statusCode = err.statusCode || 500;
+        throw err; // Re-throw the structured ApiError
+      } else if ((err as any)?.response?.data?.Fault?.Error) { // More specific check for QBO fault
+        console.error('[QB CONTROLLER] QuickBooks API Fault (Dashboard):', (err as any).response.data.Fault.Error);
+        const qboError = (err as any).response.data.Fault.Error[0];
+        throw new ApiError((err as any).response?.status || 500, `QuickBooks API Error: ${qboError?.Message || 'Unknown error'} (Code: ${qboError?.code || 'N/A'})`);
+      } else if ((err as any)?.response) { // Generic Axios error
+         console.error('[QB CONTROLLER] Axios Error Data (Dashboard):', (err as any).response.data);
+         throw new ApiError( (err as any).response?.status || 500, `API request failed: ${ (err as any).message}`);
+      } else {
+        // Throw a generic server error for unexpected issues (like parsing errors caught above)
+        throw new ApiError(500, `An unexpected error occurred while fetching dashboard data: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-
-    // Sort descending, top 5
-    return results.sort((a, b) => b.amount - a.amount).slice(0, 5);
   }
 
-  // ------------------------------------------------------------------
-  // If we fail to parse P&L for categories, fallback: group from Purchases
-  // ------------------------------------------------------------------
-  private buildExpenseCategoriesFromPurchases(purchases: any[]) {
-    const map = new Map<string, { category: string; amount: number }>();
-    for (const p of purchases) {
-      const catId = p.AccountRef?.value || "Uncategorized";
-      const catName = p.AccountRef?.name || "Uncategorized";
-      if (!map.has(catId)) {
-        map.set(catId, { category: catName, amount: 0 });
-      }
-      map.get(catId)!.amount += parseFloat(p.TotalAmt || "0");
-    }
-    return Array.from(map.values())
-      .sort((a, b) => b.amount - a.amount)
-      .slice(0, 5);
-  }
+  /**
+   * Endpoint to handle scenario planning calculations.
+   */
+   async runScenario(organizationId: string, scenarioParams: any /* Define scenario input type */) {
+       try {
+           console.log(`[QB CONTROLLER] Starting runScenario for org ${organizationId}`);
+           // 1. Fetch BASE data needed for forecasting
+           const connection = await prisma.quickbooksConnection.findUnique({ where: { organizationId } });
+           if (!connection || !connection.isActive) throw new ApiError(400, "No active QuickBooks connection");
+           const realmId = connection.realmId;
+            console.log(`[QB CONTROLLER] Scenario planning using Realm ID: ${realmId}`);
 
-  // ------------------------------------------------------------------
-  // Utility: compute percentage change
-  // (newVal - oldVal) / |oldVal| * 100 if absDenominator = true
-  // ------------------------------------------------------------------
-  private percentageChange(oldVal: number, newVal: number, absDenominator = false) {
-    if (oldVal === 0) {
-      return newVal > 0 ? 100 : newVal < 0 ? -100 : 0;
-    }
-    const denom = absDenominator ? Math.abs(oldVal) : oldVal;
-    return Math.round(((newVal - oldVal) / denom) * 100);
-  }
+           // Fetch minimal required data - adjust date ranges/params as needed
+            const now = new Date();
+            const endDateMinimal = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+            const startDateMinimal = new Date(endDateMinimal);
+            startDateMinimal.setMonth(startDateMinimal.getMonth() - 11); // ~12 months history
+            startDateMinimal.setDate(1);
+            const formatQBDate = (date: Date) => date.toISOString().split("T")[0];
+
+           const plParamsMinimal = {
+               start_date: formatQBDate(startDateMinimal),
+               end_date: formatQBDate(endDateMinimal),
+               accounting_method: "Cash", // Or make this dynamic
+               minorversion: "65",
+               summarize_column_by: "Month",
+           };
+           const bsParamsMinimal = { date: formatQBDate(endDateMinimal), accounting_method: "Cash", minorversion: "65" };
+
+           const [chartOfAccounts, plReportMinimal, bsReportMinimal, openInvoicesMinimal, openBillsMinimal] = await Promise.all([
+               this.fetchChartOfAccounts(organizationId, realmId), // Need CoA for parsing
+               this.fetchReportWithCache(organizationId, realmId, "ProfitAndLoss", plParamsMinimal),
+               this.fetchReportWithCache(organizationId, realmId, "BalanceSheet", bsParamsMinimal),
+               this.fetchOpenInvoices(organizationId, realmId),
+               this.fetchOpenBills(organizationId, realmId)
+           ]);
+            console.log(`[QB CONTROLLER] Base data fetched for scenario planning, realm ${realmId}.`);
+
+           // Basic parsing - add robust checks
+           if (!plReportMinimal || !plReportMinimal.Header || !plReportMinimal.Rows) {
+               console.error(`[QB CONTROLLER] Failed to fetch valid minimal P&L report for scenario planning, realm ${realmId}.`);
+               throw new ApiError(500, "Could not retrieve base Profit & Loss report required for scenario planning.");
+           }
+            if (!bsReportMinimal || !bsReportMinimal.Header || !bsReportMinimal.Rows) {
+               console.error(`[QB CONTROLLER] Failed to fetch valid minimal BS report for scenario planning, realm ${realmId}.`);
+               throw new ApiError(500, "Could not retrieve base Balance Sheet report required for scenario planning.");
+           }
+
+            let baseHistoricalPL: ParsedReportData[] | null = null;
+            let baseCurrentBS: ParsedBalanceSheet | null = null;
+            try {
+                baseHistoricalPL = parseMultiMonthProfitAndLoss(plReportMinimal, chartOfAccounts);
+                baseCurrentBS = parseBalanceSheet(bsReportMinimal, chartOfAccounts);
+            } catch(parseError) {
+                console.error(`[QB CONTROLLER] *** ERROR parsing base reports for scenario planning, realm ${realmId}:`, parseError);
+                throw new ApiError(500, `Internal error parsing base reports for scenario: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+            }
+           const baseAging = calculateAging(openInvoicesMinimal, openBillsMinimal);
+
+
+           // Check parsed results
+           if (!baseHistoricalPL || !Array.isArray(baseHistoricalPL) || !baseCurrentBS || typeof baseCurrentBS !== 'object') {
+               console.error(`[QB CONTROLLER] Failed to parse minimal reports correctly for scenario planning, realm ${realmId}. Parser returned invalid data.`);
+               throw new ApiError(500, "Could not process base financial data required for scenario planning.");
+           }
+           // Extract base cash safely
+           const baseCash = baseCurrentBS?.assets?.cashAndEquivalents || 0;
+           console.log(`[QB CONTROLLER] Base data parsed for scenario planning, realm ${realmId}. Base Cash: ${baseCash}`);
+
+
+           // 2. Call forecast service with MODIFIED assumptions
+           console.log(`[QB CONTROLLER] Generating scenario forecast for realm ${realmId}...`);
+           const scenarioForecast = await forecastService.generateCashFlowForecast({
+               historicalPL: baseHistoricalPL,
+               currentAR: baseAging.ar,
+               currentAP: baseAging.ap,
+               currentCash: baseCash,
+               scenarioModifiers: scenarioParams,
+           });
+           console.log(`[QB CONTROLLER] Scenario forecast generated for realm ${realmId}.`);
+
+           // 3. Return the scenario forecast results
+           return {
+               scenarioName: scenarioParams.name || 'Scenario',
+               forecast: scenarioForecast,
+           };
+
+       } catch (err) {
+           console.error(`[QB CONTROLLER] *** ERROR in runScenario for org ${organizationId}:`, err instanceof Error ? err.message : String(err), err);
+            if (err instanceof ApiError) {
+                err.statusCode = err.statusCode || 500;
+                throw err;
+            }
+             // Check for QBO specific fault structure
+            const qboError = (err as any)?.response?.data?.Fault?.Error?.[0];
+            if (qboError) {
+                 throw new ApiError((err as any).response?.status || 500, `QuickBooks API Error during scenario base data fetch: ${qboError?.Message || 'Unknown error'} (Code: ${qboError?.code || 'N/A'})`);
+            }
+            throw new ApiError(500, `Error running scenario: ${err instanceof Error ? err.message : String(err)}`);
+       }
+   }
+
 }
 
-// Export a singleton instance
 export const quickbooksDashboardController = new QuickbooksDashboardController();
+
+// NOTE: Assumes existence and implementation of:
+// - ../../services/cacheService (e.g., using Redis)
+// - ../../services/financial/forecastService (complex time-series logic)
+// - ../../services/financial/insightsService (complex rule engine/ML)
+// - ../../services/financial/benchmarkService (data acquisition + retrieval)
+// - ../../services/quickbooks/quickbooksReportParser (houses parsing, calculation helpers)
+//   - ChartOfAccountsMap, ParsedReportData, ParsedBalanceSheet types
+//   - parseMultiMonthProfitAndLoss, parseBalanceSheet functions (CoA-aware) -> DEBUG parseMultiMonthProfitAndLoss
+//   - calculateCoreMetrics, calculateFinancialRatios, calculateTrends, calculateAging, calculateRunway functions (ensure they handle null inputs gracefully where appropriate)
+//   - buildRecentActivity, buildTopCustomers, extractTopExpenseCategories (refined helpers, ensure they handle null/empty inputs)
