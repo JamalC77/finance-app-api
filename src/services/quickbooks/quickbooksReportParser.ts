@@ -456,10 +456,25 @@ export const calculateCoreMetrics = (
     metrics.prevMonthCashBalance = prevMonthBS?.assets.cashAndEquivalents ?? 0; metrics.yoyCashBalance = yoyBS?.assets.cashAndEquivalents;
     const calcChange = (oldVal: number | undefined | null, newVal: number | undefined | null): number => { const oldN = oldVal ?? 0; const newN = newVal ?? 0; if (oldN === 0) { if (newN > 0) return 100; if (newN < 0) return -100; return 0; } return Math.round(((newN - oldN) / Math.abs(oldN)) * 100); };
     metrics.cashChangePercentage = calcChange(metrics.prevMonthCashBalance, metrics.cashBalance); metrics.incomeChangePercentage = calcChange(prevMonthPL?.income, metrics.currentIncome); metrics.expensesChangePercentage = calcChange(prevMonthPL?.expenses, metrics.currentExpenses); metrics.profitLossChangePercentage = calcChange(prevMonthPL?.netIncome, metrics.currentProfitLoss);
-    const daysInCurrentMonth = currentMonthDate && isValid(currentMonthDate) ? differenceInDays(endOfMonth(currentMonthDate), startOfMonth(currentMonthDate)) + 1 : 30;
-    const avgDailySales = (metrics.currentIncome ?? 0) / daysInCurrentMonth; metrics.dso = (avgDailySales > 0) ? Math.round(metrics.totalAR / avgDailySales) : 0;
-    const avgDailyCOGS = (metrics.currentCOGS ?? 0) / daysInCurrentMonth; metrics.dpo = (avgDailyCOGS > 0) ? Math.round(metrics.totalAP / avgDailyCOGS) : 0;
-    if (metrics.dpo === 0 && metrics.totalAP > 0 && (metrics.currentExpenses ?? 0) > 0) { const avgDailyExpenses = (metrics.currentExpenses ?? 0) / daysInCurrentMonth; metrics.dpo = (avgDailyExpenses > 0) ? Math.round(metrics.totalAP / avgDailyExpenses) : 0; }
+    // DSO: Use trailing 12-month revenue for accurate calculation (not single month which may be partial)
+    const trailing12Months = plData.slice(-12);
+    const trailing12MonthIncome = trailing12Months.reduce((sum, p) => sum + (p.income || 0), 0);
+    const trailing12MonthCOGS = trailing12Months.reduce((sum, p) => sum + (p.cogs || 0), 0);
+    const trailing12MonthExpenses = trailing12Months.reduce((sum, p) => sum + (p.expenses || 0), 0);
+    const daysInPeriod = trailing12Months.length * 30; // Approximate days in trailing period
+
+    const avgDailySales = daysInPeriod > 0 ? trailing12MonthIncome / daysInPeriod : 0;
+    metrics.dso = (avgDailySales > 0) ? Math.round((metrics.totalAR ?? 0) / avgDailySales) : 0;
+
+    const avgDailyCOGS = daysInPeriod > 0 ? trailing12MonthCOGS / daysInPeriod : 0;
+    metrics.dpo = (avgDailyCOGS > 0) ? Math.round((metrics.totalAP ?? 0) / avgDailyCOGS) : 0;
+
+    // Fallback DPO calculation using expenses if COGS-based DPO is 0
+    if (metrics.dpo === 0 && (metrics.totalAP ?? 0) > 0 && trailing12MonthExpenses > 0) {
+        const avgDailyExpenses = trailing12MonthExpenses / daysInPeriod;
+        metrics.dpo = (avgDailyExpenses > 0) ? Math.round((metrics.totalAP ?? 0) / avgDailyExpenses) : 0;
+    }
+
     metrics.dso = Math.max(0, metrics.dso); metrics.dpo = Math.max(0, metrics.dpo);
     return metrics as CoreMetrics;
 };
@@ -497,14 +512,90 @@ export const calculateTrends = (
 /** Calculates AR and AP aging buckets */
 export const calculateAging = (
     openInvoices: any[],
-    openBills: any[]
+    openBills: any[],
+    balanceSheetAR: number = 0,
+    balanceSheetAP: number = 0
 ): AgingData => {
-    // (Uses updated safeParseFloat)
     const today = new Date();
-    const aging: AgingData = { ar: { "0-30": 0, "31-60": 0, "61-90": 0, "90+": 0, total: 0 }, ap: { "0-30": 0, "31-60": 0, "61-90": 0, "90+": 0, total: 0 }, };
-    openInvoices.forEach(inv => { const balance = safeParseFloat(inv.Balance); if (balance <= 0) return; const dueDate = parseQBDate(inv.DueDate); const txnDate = parseQBDate(inv.TxnDate); const refDate = dueDate || txnDate; aging.ar.total += balance; if (refDate && isValid(refDate)) { const daysOverdue = differenceInDays(today, refDate); if (daysOverdue <= 0) aging.ar["0-30"] += balance; else if (daysOverdue <= 30) aging.ar["0-30"] += balance; else if (daysOverdue <= 60) aging.ar["31-60"] += balance; else if (daysOverdue <= 90) aging.ar["61-90"] += balance; else aging.ar["90+"] += balance; } else { console.warn(`[Aging] Invoice ID ${inv.Id} has no valid date. Placing in 90+ bucket.`); aging.ar["90+"] += balance; } });
-    openBills.forEach(bill => { const balance = safeParseFloat(bill.Balance); if (balance <= 0) return; const dueDate = parseQBDate(bill.DueDate); const txnDate = parseQBDate(bill.TxnDate); const refDate = dueDate || txnDate; aging.ap.total += balance; if (refDate && isValid(refDate)) { const daysOverdue = differenceInDays(today, refDate); if (daysOverdue <= 0) aging.ap["0-30"] += balance; else if (daysOverdue <= 30) aging.ap["0-30"] += balance; else if (daysOverdue <= 60) aging.ap["31-60"] += balance; else if (daysOverdue <= 90) aging.ap["61-90"] += balance; else aging.ap["90+"] += balance; } else { console.warn(`[Aging] Bill ID ${bill.Id} has no valid date. Placing in 90+ bucket.`); aging.ap["90+"] += balance; } });
-    Object.keys(aging.ar).forEach(k => { aging.ar[k as keyof AgingData['ar']] = Math.round(aging.ar[k as keyof AgingData['ar']] * 100) / 100; }); Object.keys(aging.ap).forEach(k => { aging.ap[k as keyof AgingData['ap']] = Math.round(aging.ap[k as keyof AgingData['ap']] * 100) / 100; });
+    const aging: AgingData = {
+        ar: { "0-30": 0, "31-60": 0, "61-90": 0, "90+": 0, total: 0 },
+        ap: { "0-30": 0, "31-60": 0, "61-90": 0, "90+": 0, total: 0 },
+    };
+
+    // Process open invoices for AR aging
+    openInvoices.forEach(inv => {
+        const balance = safeParseFloat(inv.Balance);
+        if (balance <= 0) return;
+        const dueDate = parseQBDate(inv.DueDate);
+        const txnDate = parseQBDate(inv.TxnDate);
+        const refDate = dueDate || txnDate;
+        aging.ar.total += balance;
+
+        if (refDate && isValid(refDate)) {
+            const daysOverdue = differenceInDays(today, refDate);
+            if (daysOverdue <= 0) aging.ar["0-30"] += balance;
+            else if (daysOverdue <= 30) aging.ar["0-30"] += balance;
+            else if (daysOverdue <= 60) aging.ar["31-60"] += balance;
+            else if (daysOverdue <= 90) aging.ar["61-90"] += balance;
+            else aging.ar["90+"] += balance;
+        } else {
+            console.warn(`[Aging] Invoice ID ${inv.Id} has no valid date. Placing in 90+ bucket.`);
+            aging.ar["90+"] += balance;
+        }
+    });
+
+    // Fallback: If no AR from invoices but balance sheet shows AR, use balance sheet value
+    // Distribute conservatively (unknown aging = assume older)
+    if (aging.ar.total === 0 && balanceSheetAR > 0) {
+        console.warn(`[Aging] No open invoices found but Balance Sheet AR is ${balanceSheetAR}. Using fallback distribution.`);
+        aging.ar.total = balanceSheetAR;
+        // Conservative distribution: 20% current, 20% 31-60, 20% 61-90, 40% 90+
+        aging.ar["0-30"] = balanceSheetAR * 0.20;
+        aging.ar["31-60"] = balanceSheetAR * 0.20;
+        aging.ar["61-90"] = balanceSheetAR * 0.20;
+        aging.ar["90+"] = balanceSheetAR * 0.40;
+    }
+
+    // Process open bills for AP aging
+    openBills.forEach(bill => {
+        const balance = safeParseFloat(bill.Balance);
+        if (balance <= 0) return;
+        const dueDate = parseQBDate(bill.DueDate);
+        const txnDate = parseQBDate(bill.TxnDate);
+        const refDate = dueDate || txnDate;
+        aging.ap.total += balance;
+
+        if (refDate && isValid(refDate)) {
+            const daysOverdue = differenceInDays(today, refDate);
+            if (daysOverdue <= 0) aging.ap["0-30"] += balance;
+            else if (daysOverdue <= 30) aging.ap["0-30"] += balance;
+            else if (daysOverdue <= 60) aging.ap["31-60"] += balance;
+            else if (daysOverdue <= 90) aging.ap["61-90"] += balance;
+            else aging.ap["90+"] += balance;
+        } else {
+            console.warn(`[Aging] Bill ID ${bill.Id} has no valid date. Placing in 90+ bucket.`);
+            aging.ap["90+"] += balance;
+        }
+    });
+
+    // Fallback: If no AP from bills but balance sheet shows AP, use balance sheet value
+    if (aging.ap.total === 0 && balanceSheetAP > 0) {
+        console.warn(`[Aging] No open bills found but Balance Sheet AP is ${balanceSheetAP}. Using fallback distribution.`);
+        aging.ap.total = balanceSheetAP;
+        aging.ap["0-30"] = balanceSheetAP * 0.20;
+        aging.ap["31-60"] = balanceSheetAP * 0.20;
+        aging.ap["61-90"] = balanceSheetAP * 0.20;
+        aging.ap["90+"] = balanceSheetAP * 0.40;
+    }
+
+    // Round all values
+    Object.keys(aging.ar).forEach(k => {
+        aging.ar[k as keyof AgingData['ar']] = Math.round(aging.ar[k as keyof AgingData['ar']] * 100) / 100;
+    });
+    Object.keys(aging.ap).forEach(k => {
+        aging.ap[k as keyof AgingData['ap']] = Math.round(aging.ap[k as keyof AgingData['ap']] * 100) / 100;
+    });
+
     return aging;
 };
 

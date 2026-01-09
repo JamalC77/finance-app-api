@@ -432,7 +432,7 @@ class QuickbooksDashboardController {
       console.log(`[QB CONTROLLER] Calculating trends for realm ${realmId}...`);
       const trends = calculateTrends(parsedPLData, coreMetrics); // Ensure this handles potentially short PL data history
       console.log(`[QB CONTROLLER] Calculating aging for realm ${realmId}...`);
-      const aging = calculateAging(openInvoices, openBills);
+      const aging = calculateAging(openInvoices, openBills, coreMetrics.totalAR, coreMetrics.totalAP);
       console.log(`[QB CONTROLLER] Calculating runway for realm ${realmId}...`);
       const runwayMonths = calculateRunway(coreMetrics.cashBalance, trends.avgMonthlyBurn);
       console.log(`[QB CONTROLLER] Core calculations completed for realm ${realmId}.`);
@@ -601,7 +601,12 @@ class QuickbooksDashboardController {
                 console.error(`[QB CONTROLLER] *** ERROR parsing base reports for scenario planning, realm ${realmId}:`, parseError);
                 throw new ApiError(500, `Internal error parsing base reports for scenario: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
             }
-           const baseAging = calculateAging(openInvoicesMinimal, openBillsMinimal);
+           const baseAging = calculateAging(
+               openInvoicesMinimal,
+               openBillsMinimal,
+               baseCurrentBS?.assets?.accountsReceivable || 0,
+               baseCurrentBS?.liabilities?.accountsPayable || 0
+           );
 
 
            // Check parsed results

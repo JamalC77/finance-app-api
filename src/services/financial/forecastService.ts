@@ -109,6 +109,39 @@ class ForecastService {
      }
 
     /**
+     * Checks if a month appears to be incomplete based on comparing income to historical average.
+     * A month with income less than 30% of the trailing average is likely incomplete.
+     */
+    private isIncompleteMonth(monthData: ParsedReportData, historicalPL: ParsedReportData[]): boolean {
+        if (historicalPL.length < 3) return false;
+
+        // Get trailing average (excluding the month being checked)
+        const otherMonths = historicalPL.slice(0, -1);
+        if (otherMonths.length === 0) return false;
+
+        const avgIncome = otherMonths.reduce((sum, p) => sum + (p.income || 0), 0) / otherMonths.length;
+
+        // If current month income is less than 30% of average, likely incomplete
+        const currentIncome = monthData.income || 0;
+        const isLikelyIncomplete = avgIncome > 0 && currentIncome < avgIncome * 0.30;
+
+        if (isLikelyIncomplete) {
+            console.log(`[ForecastService] Detected incomplete month: ${monthData.month} (income: ${currentIncome} vs avg: ${avgIncome.toFixed(0)})`);
+        }
+
+        return isLikelyIncomplete;
+    }
+
+    /**
+     * Calculates trailing average for income/expenses (more stable than growth factors)
+     */
+    private calculateTrailingAverage(history: number[], lookbackMonths = 6): number {
+        if (history.length === 0) return 0;
+        const relevantHistory = history.slice(-lookbackMonths);
+        return relevantHistory.reduce((sum, val) => sum + (val || 0), 0) / relevantHistory.length;
+    }
+
+    /**
      * Generates a cash flow forecast.
      */
     async generateCashFlowForecast(input: ForecastInput): Promise<CashFlowForecastItem[]> {
@@ -125,22 +158,43 @@ class ForecastService {
 
         if (historicalPL.length < MIN_HISTORY_FOR_GROWTH) {
             console.warn("[ForecastService] Insufficient historical data for forecasting.");
-            // Maybe return a very basic forecast based only on AR/AP? Or empty?
             return [];
         }
 
-        // 1. Get Last Actual Month's Data
-        const lastActual = historicalPL[historicalPL.length - 1];
-        if (!lastActual) return []; // Should not happen if length check passed
+        // 1. Check if the last month is incomplete and exclude it if so
+        let effectiveHistory = [...historicalPL];
+        const lastMonth = effectiveHistory[effectiveHistory.length - 1];
 
-        // 2. Calculate Base Growth Factors (Income, Expenses)
-        const incomeHistory = historicalPL.map(p => p.income);
-        const expenseHistory = historicalPL.map(p => p.expenses);
-        // More sophisticated: Use EWMA or other smoothing
-        let baseIncomeGrowthFactor = this.calculateGrowthFactor(incomeHistory);
-        let baseExpenseGrowthFactor = this.calculateGrowthFactor(expenseHistory);
+        if (lastMonth && this.isIncompleteMonth(lastMonth, effectiveHistory)) {
+            console.log(`[ForecastService] Excluding incomplete month ${lastMonth.month} from forecast calculations`);
+            effectiveHistory = effectiveHistory.slice(0, -1);
+        }
 
-        // 3. Apply Scenario Multipliers to Growth Factors/Base Values
+        if (effectiveHistory.length < MIN_HISTORY_FOR_GROWTH) {
+            console.warn("[ForecastService] Insufficient complete historical data for forecasting after excluding incomplete month.");
+            return [];
+        }
+
+        // 2. Use trailing averages instead of growth factors for more stable projections
+        const incomeHistory = effectiveHistory.map(p => p.income);
+        const expenseHistory = effectiveHistory.map(p => p.expenses);
+
+        // Use 6-month trailing average as baseline (more stable than growth factors)
+        const avgMonthlyIncome = this.calculateTrailingAverage(incomeHistory, 6);
+        const avgMonthlyExpenses = this.calculateTrailingAverage(expenseHistory, 6);
+
+        // Calculate modest growth factor from longer-term trend (12 months)
+        const baseIncomeGrowthFactor = this.calculateGrowthFactor(incomeHistory);
+        const baseExpenseGrowthFactor = this.calculateGrowthFactor(expenseHistory);
+
+        // Dampen growth factors to avoid extreme projections (cap at +/- 5% monthly)
+        const dampenedIncomeGrowth = Math.max(0.95, Math.min(baseIncomeGrowthFactor, 1.05));
+        const dampenedExpenseGrowth = Math.max(0.95, Math.min(baseExpenseGrowthFactor, 1.05));
+
+        console.log(`[ForecastService] Using avg income: ${avgMonthlyIncome.toFixed(0)}, avg expenses: ${avgMonthlyExpenses.toFixed(0)}`);
+        console.log(`[ForecastService] Dampened growth factors - income: ${dampenedIncomeGrowth.toFixed(3)}, expenses: ${dampenedExpenseGrowth.toFixed(3)}`);
+
+        // 3. Apply Scenario Multipliers
         const {
             revenueMultiplier = 1.0,
             expenseMultiplier = 1.0,
@@ -148,51 +202,39 @@ class ForecastService {
             newRecurringExpense = 0,
         } = scenarioModifiers;
 
-        // Adjust base for next month calculation
-        let lastMonthIncome = lastActual.income * revenueMultiplier;
-        let lastMonthExpenses = lastActual.expenses * expenseMultiplier;
-        // OR adjust growth factors (subtler effect)
-        // baseIncomeGrowthFactor *= (revenueMultiplier > 1 ? revenueMultiplier : 1); // Only apply positive growth multiplier?
-        // baseExpenseGrowthFactor *= (expenseMultiplier > 1 ? expenseMultiplier : 1);
+        // Start projections from trailing average (adjusted by scenario multipliers)
+        let projectedIncome = avgMonthlyIncome * revenueMultiplier;
+        let projectedExpenses = avgMonthlyExpenses * expenseMultiplier;
 
         // 4. Estimate AR/AP Impact for the forecast period
         const arApMonthlyImpact = this.estimateArApImpact(currentAR, currentAP, forecastLengthMonths);
 
         // 5. Project Future Months
         let runningCashBalance = currentCash;
-        let currentProjectionDate = addMonths(new Date(lastActual.endDate), 1); // Start forecasting from month after last actual
+        const lastComplete = effectiveHistory[effectiveHistory.length - 1];
+        let currentProjectionDate = addMonths(new Date(lastComplete.endDate), 1);
 
         for (let i = 0; i < forecastLengthMonths; i++) {
-            // Project income & expenses based on growth factors
-            const projectedIncomeBase = lastMonthIncome * baseIncomeGrowthFactor;
-            const projectedExpenseBase = lastMonthExpenses * baseExpenseGrowthFactor;
+            // Apply dampened growth factors
+            projectedIncome = projectedIncome * dampenedIncomeGrowth + newRecurringRevenue;
+            projectedExpenses = projectedExpenses * dampenedExpenseGrowth + newRecurringExpense;
 
-            // Add fixed scenario adjustments AND new recurring amounts
-            const projectedIncome = projectedIncomeBase + newRecurringRevenue;
-            const projectedExpenses = projectedExpenseBase + newRecurringExpense;
-
-            // Calculate Net Change for the month BEFORE AR/AP adjustments from *prior* periods
+            // Calculate net change
             const netChangeBase = projectedIncome - projectedExpenses;
-
-             // Add this month's estimated cash impact from collecting old AR / paying old AP
             const arApImpactThisMonth = arApMonthlyImpact[i] || 0;
             const projectedNetChange = netChangeBase + arApImpactThisMonth;
-
 
             // Update running balance
             runningCashBalance += projectedNetChange;
 
             forecast.push({
-                month: format(currentProjectionDate, 'MMM yyyy'), // e.g., "Apr 2025"
+                month: format(currentProjectionDate, 'MMM yyyy'),
                 projected_income: Math.round(projectedIncome),
                 projected_expenses: Math.round(projectedExpenses),
                 projected_net_change: Math.round(projectedNetChange),
                 projected_balance: Math.round(runningCashBalance),
             });
 
-            // Update last month's values for next iteration (use the adjusted base values)
-            lastMonthIncome = projectedIncome;
-            lastMonthExpenses = projectedExpenses;
             currentProjectionDate = addMonths(currentProjectionDate, 1);
         }
 
