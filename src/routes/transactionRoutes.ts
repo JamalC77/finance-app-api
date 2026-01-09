@@ -7,7 +7,7 @@ import {
   deleteTransaction,
   getTransactionStats
 } from '../controllers/transactionController';
-import { authenticateJWT } from '../middleware/auth';
+import { authenticateJWT } from '../middleware/authMiddleware';
 import { isolatedHandler } from '../utils/asyncHandler';
 
 const router = express.Router();

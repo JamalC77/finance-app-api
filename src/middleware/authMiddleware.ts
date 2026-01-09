@@ -89,4 +89,36 @@ export const auth = async (req: Request, res: Response, next: NextFunction) => {
 };
 
 // Export auth as authMiddleware for backward compatibility
-export const authMiddleware = auth; 
+export const authMiddleware = auth;
+
+/**
+ * Lightweight JWT Authentication Middleware (no DB lookup)
+ * Use this for routes where DB check isn't needed for performance
+ */
+export const authenticateJWT = (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      return res.status(401).json({ message: 'No authorization token provided' });
+    }
+
+    const token = authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ message: 'Invalid authorization format' });
+    }
+
+    const decoded = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+
+    if (!decoded.organizationId) {
+      return res.status(401).json({ message: 'Invalid token: missing organizationId' });
+    }
+
+    req.user = decoded;
+    next();
+  } catch (error) {
+    console.error('JWT Authentication error:', error);
+    return res.status(401).json({ message: 'Invalid or expired token' });
+  }
+}; 

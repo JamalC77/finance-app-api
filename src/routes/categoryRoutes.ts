@@ -7,7 +7,7 @@ import {
   deleteCategory,
   getCategoryHierarchy
 } from '../controllers/categoryController';
-import { authenticateJWT } from '../middleware/auth';
+import { authenticateJWT } from '../middleware/authMiddleware';
 
 const router = express.Router();
 

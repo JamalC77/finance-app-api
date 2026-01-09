@@ -5,7 +5,6 @@ import morgan from 'morgan';
 import dotenv from 'dotenv';
 
 import { env, isDev } from './utils/env';
-import { errorHandler } from './middleware/authMiddleware';
 import { noCache } from './middleware/cacheControlMiddleware';
 import { apiErrorHandler } from './middleware/errorMiddleware';
 
@@ -24,6 +23,9 @@ import userRoutes from './routes/userRoutes';
 import categoryRoutes from './routes/categoryRoutes';
 import quickbooksRoutes from './routes/quickbooksRoutes';
 import insightsRoutes from './routes/insightsRoutes';
+import publicRoutes from './routes/publicRoutes';
+import snowflakeRoutes from './routes/snowflakeRoutes';
+import subscriptionRoutes from './routes/subscriptionRoutes';
 
 // Create Express app
 const app = express();
@@ -33,20 +35,17 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 })); // Security headers with less strict CORS policy
 
-// Super permissive CORS configuration for troubleshooting
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept']
-}));
+// CORS configuration - use FRONTEND_URL in production, allow all in dev
+const allowedOrigins = isDev
+  ? ['http://localhost:3000', 'http://127.0.0.1:3000']
+  : [env.FRONTEND_URL].filter(Boolean);
 
-// Add CORS headers to all responses
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  next();
-});
+app.use(cors({
+  origin: isDev ? true : allowedOrigins,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept'],
+  credentials: true
+}));
 
 // Body parsing middleware - place this BEFORE routes
 app.use(express.json({ limit: '50mb' })); // Parse JSON bodies with increased limit
@@ -82,6 +81,11 @@ app.use('/api/accounts', noCache, accountRoutes);
 app.use('/api/categories', noCache, categoryRoutes);
 app.use('/api/quickbooks', noCache, quickbooksRoutes);
 app.use('/api/insights', noCache, insightsRoutes);
+app.use('/api/snowflake', noCache, snowflakeRoutes);
+app.use('/api/subscriptions', noCache, subscriptionRoutes);
+
+// Public routes (no auth required for invoice viewing/payment)
+app.use('/api/public', publicRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

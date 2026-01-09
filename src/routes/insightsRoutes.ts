@@ -1,6 +1,6 @@
 import express from 'express';
 import { authMiddleware } from '../middleware/authMiddleware';
-import { financialInsightService } from '../services/insights/financialInsightService';
+import { financialInsightService } from '../services/financial/financialInsightService';
 import { bigQueryService } from '../services/google/bigQueryService';
 import { formatErrorResponse } from '../utils/errors';
 import { prisma } from '../models/prisma';
