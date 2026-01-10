@@ -3,14 +3,16 @@ import { ApiError } from "../../utils/errors";
 import { quickbooksApiClient } from "../../services/quickbooks/quickbooksApiClient";
 import { forecastService } from "../../services/financial/forecastService";
 import { insightsService } from "../../services/financial/insightsRuleEngine";
-import { benchmarkService } from "../../services/financial/benchmarkService";
 import { cacheService } from "../../services/cacheService";
 import {
   parseMultiMonthProfitAndLoss,
   parseBalanceSheet,
+  parseAgedReceivablesReport,
+  buildTopCustomersByOutstanding,
   ChartOfAccountsMap, // Assuming helper types/functions are moved/created
   ParsedReportData,
   ParsedBalanceSheet,
+  CustomerARDetail,
   calculateCoreMetrics,
   calculateFinancialRatios,
   calculateTrends,
@@ -230,9 +232,52 @@ class QuickbooksDashboardController {
      } catch (err) {
        const qboError = (err as any)?.response?.data?.Fault?.Error?.[0];
        console.error(`[QB CONTROLLER] Failed to fetch customers for ${realmId}. Error: ${err instanceof Error ? err.message : String(err)}. QBO Detail: ${qboError?.Detail || 'N/A'}. Returning empty array.`, err);
-       return []; // Return empty
-     }
-   }
+      return []; // Return empty
+    }
+  }
+
+  /** Fetches Aged Receivables report for customer-level AR breakdown. Cache moderately. */
+  private async fetchAgedReceivablesReport(organizationId: string, realmId: string) {
+    const cacheKey = `qbo:agedreceivables:${realmId}`;
+    const cached = await cacheService.get<any>(cacheKey);
+    if (cached) {
+      console.log(`[QB CONTROLLER] Using cached AgedReceivables report for realm ${realmId}`);
+      return cached;
+    }
+    console.log(`[QB CONTROLLER] Fetching fresh AgedReceivables report for realm ${realmId}`);
+
+    try {
+      const today = new Date();
+      const formatQBDate = (date: Date) => date.toISOString().split("T")[0];
+      
+      const params = {
+        report_date: formatQBDate(today),
+        minorversion: "75"
+      };
+
+      const report = await quickbooksApiClient.getReport(
+        organizationId,
+        realmId,
+        "AgedReceivables",
+        params
+      );
+
+      // Basic validation
+      if (!report || !report.Rows) {
+        console.warn(`[QB CONTROLLER] AgedReceivables report for realm ${realmId} seems invalid or empty. Returning null.`);
+        await cacheService.set(cacheKey, null, 600); // Cache null for 10 mins
+        return null;
+      }
+
+      console.log(`[QB CONTROLLER] Fetched fresh AgedReceivables report for realm ${realmId}. Caching...`);
+      await cacheService.set(cacheKey, report, 1800); // Cache for 30 mins
+      return report;
+    } catch (err) {
+      const qboError = (err as any)?.response?.data?.Fault?.Error?.[0];
+      console.error(`[QB CONTROLLER] Failed to fetch AgedReceivables report for ${realmId}. Error: ${err instanceof Error ? err.message : String(err)}. QBO Detail: ${qboError?.Detail || 'N/A'}. Returning null.`, err);
+      return null; // Return null, don't fail the whole dashboard
+    }
+  }
 
 
   /**
@@ -293,6 +338,7 @@ class QuickbooksDashboardController {
         openInvoices,
         openBills,
         customers,
+        agedReceivablesReport,
       ] = await Promise.all([
         this.fetchReportWithCache(organizationId, realmId, "ProfitAndLoss", plParams),
         this.fetchReportWithCache(organizationId, realmId, "BalanceSheet", bsParamsCurrent),
@@ -301,6 +347,7 @@ class QuickbooksDashboardController {
         this.fetchOpenInvoices(organizationId, realmId),
         this.fetchOpenBills(organizationId, realmId),
         this.fetchAllCustomers(organizationId, realmId),
+        this.fetchAgedReceivablesReport(organizationId, realmId),
       ]);
       console.log(`[QB CONTROLLER] Parallel data fetch completed for realm ${realmId}.`);
 
@@ -447,14 +494,12 @@ class QuickbooksDashboardController {
       });
       console.log(`[QB CONTROLLER] Cash flow forecast generated for realm ${realmId}.`);
 
-      // 7. Insights & Benchmarking (Backend Logic)
-      console.log(`[QB CONTROLLER] Generating insights and benchmarks for realm ${realmId}...`);
-      const userIndustry = await benchmarkService.getUserIndustry(organizationId);
-      const benchmarks = await benchmarkService.getBenchmarks(userIndustry);
-      const businessInsights = await insightsService.generateInsights({
-         metrics: coreMetrics, ratios, trends, aging, runway: runwayMonths, forecast: cashFlowForecast, benchmarks
+      // 7. Generate Insights (Backend Logic)
+      console.log(`[QB CONTROLLER] Generating insights for realm ${realmId}...`);
+      const businessInsights = insightsService.generateInsights({
+         metrics: coreMetrics, ratios, trends, aging, runway: runwayMonths, forecast: cashFlowForecast
       });
-      console.log(`[QB CONTROLLER] Insights and benchmarks generated for realm ${realmId}.`);
+      console.log(`[QB CONTROLLER] Insights generated for realm ${realmId}.`);
 
        // 8. Build supporting lists
        console.log(`[QB CONTROLLER] Building supporting lists for realm ${realmId}...`);
@@ -466,6 +511,20 @@ class QuickbooksDashboardController {
       const topExpenseCategories = multiMonthPLReport && plLastIndex !== -1
           ? extractTopExpenseCategories(multiMonthPLReport, chartOfAccounts, plLastIndex)
           : [];
+      
+      // 8.1 Build customer-level AR details
+      // Try to use the official AgedReceivables report first, fall back to open invoices
+      let customerARDetails: CustomerARDetail[] = [];
+      if (agedReceivablesReport) {
+          console.log(`[QB CONTROLLER] Parsing AgedReceivables report for realm ${realmId}...`);
+          customerARDetails = parseAgedReceivablesReport(agedReceivablesReport);
+      }
+      // Fall back to building from open invoices if report parsing failed or returned empty
+      if (customerARDetails.length === 0 && openInvoices.length > 0) {
+          console.log(`[QB CONTROLLER] Building customer AR from open invoices for realm ${realmId}...`);
+          customerARDetails = buildTopCustomersByOutstanding(openInvoices, customers);
+      }
+      console.log(`[QB CONTROLLER] Customer AR details: ${customerARDetails.length} customers found.`);
       console.log(`[QB CONTROLLER] Supporting lists built for realm ${realmId}.`);
 
 
@@ -493,14 +552,16 @@ class QuickbooksDashboardController {
         // Forecast
         cashFlowForecast: cashFlowForecast,
 
-        // Insights & Context
+        // Insights
         businessInsights: businessInsights,
-        industryBenchmarks: benchmarks,
 
         // Supporting Lists
         recentActivity: recentActivity.slice(0, 5),
         topCustomers: topCustomers.slice(0, 5),
         topExpenseCategories: topExpenseCategories.slice(0, 5),
+        
+        // Customer-level AR breakdown (top 10 by outstanding amount)
+        customerARDetails: customerARDetails.slice(0, 10),
 
         // Advanced/Detailed Data
         advancedMetrics: {

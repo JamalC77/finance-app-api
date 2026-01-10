@@ -21,19 +21,49 @@ interface AgingBucket {
     total: number;
 }
 
+// Scenario modifier types for "What-If" planning
+interface ScenarioModifiers {
+    // Basic multipliers
+    revenueMultiplier?: number;
+    expenseMultiplier?: number;
+    newRecurringRevenue?: number;
+    newRecurringExpense?: number;
+
+    // Lose a customer scenario
+    loseCustomer?: {
+        revenueAmount: number;      // Monthly revenue lost
+        effectiveMonth?: number;    // 0-based index from forecast start (default: 0 = immediate)
+    };
+
+    // New hire scenario
+    newHire?: {
+        role: string;
+        monthlySalary: number;      // Base monthly salary
+        count: number;              // Number of hires
+        startMonth?: number;        // 0-based index (default: 0)
+    };
+
+    // One-time expense scenario
+    oneTimeExpense?: {
+        amount: number;
+        month: number;              // 0-based index
+        description?: string;
+    };
+
+    // Pay off debt scenario
+    payoffDebt?: {
+        amount: number;
+        month?: number;             // 0-based index (default: 0)
+    };
+}
+
 interface ForecastInput {
     historicalPL: ParsedReportData[]; // Expecting 12-24 months, sorted oldest to newest
     currentAR: AgingBucket;
     currentAP: AgingBucket;
     currentCash: number;
     forecastLengthMonths?: number; // How many months to forecast
-    scenarioModifiers?: { // For scenario planning
-        revenueMultiplier?: number;
-        expenseMultiplier?: number;
-        newRecurringRevenue?: number;
-        newRecurringExpense?: number;
-        // Add more specific scenario inputs as needed
-    };
+    scenarioModifiers?: ScenarioModifiers;
 }
 
 interface CashFlowForecastItem {
@@ -194,17 +224,21 @@ class ForecastService {
         console.log(`[ForecastService] Using avg income: ${avgMonthlyIncome.toFixed(0)}, avg expenses: ${avgMonthlyExpenses.toFixed(0)}`);
         console.log(`[ForecastService] Dampened growth factors - income: ${dampenedIncomeGrowth.toFixed(3)}, expenses: ${dampenedExpenseGrowth.toFixed(3)}`);
 
-        // 3. Apply Scenario Multipliers
+        // 3. Extract Scenario Modifiers
         const {
             revenueMultiplier = 1.0,
             expenseMultiplier = 1.0,
             newRecurringRevenue = 0,
             newRecurringExpense = 0,
+            loseCustomer,
+            newHire,
+            oneTimeExpense,
+            payoffDebt,
         } = scenarioModifiers;
 
         // Start projections from trailing average (adjusted by scenario multipliers)
-        let projectedIncome = avgMonthlyIncome * revenueMultiplier;
-        let projectedExpenses = avgMonthlyExpenses * expenseMultiplier;
+        let baseProjectedIncome = avgMonthlyIncome * revenueMultiplier;
+        let baseProjectedExpenses = avgMonthlyExpenses * expenseMultiplier;
 
         // 4. Estimate AR/AP Impact for the forecast period
         const arApMonthlyImpact = this.estimateArApImpact(currentAR, currentAP, forecastLengthMonths);
@@ -215,22 +249,58 @@ class ForecastService {
         let currentProjectionDate = addMonths(new Date(lastComplete.endDate), 1);
 
         for (let i = 0; i < forecastLengthMonths; i++) {
-            // Apply dampened growth factors
-            projectedIncome = projectedIncome * dampenedIncomeGrowth + newRecurringRevenue;
-            projectedExpenses = projectedExpenses * dampenedExpenseGrowth + newRecurringExpense;
+            // Apply dampened growth factors to base projections
+            baseProjectedIncome = baseProjectedIncome * dampenedIncomeGrowth + newRecurringRevenue;
+            baseProjectedExpenses = baseProjectedExpenses * dampenedExpenseGrowth + newRecurringExpense;
+
+            // Start with base projections for this month
+            let monthlyIncome = baseProjectedIncome;
+            let monthlyExpenses = baseProjectedExpenses;
+            let oneTimeImpact = 0;
+
+            // Apply loseCustomer modifier: reduce income starting from effectiveMonth
+            if (loseCustomer) {
+                const effectiveMonth = loseCustomer.effectiveMonth ?? 0;
+                if (i >= effectiveMonth) {
+                    monthlyIncome -= loseCustomer.revenueAmount;
+                }
+            }
+
+            // Apply newHire modifier: increase expenses starting from startMonth
+            // Include ~30% for benefits/taxes on top of base salary
+            if (newHire) {
+                const startMonth = newHire.startMonth ?? 0;
+                if (i >= startMonth) {
+                    const totalMonthlyCost = newHire.monthlySalary * newHire.count * 1.3;
+                    monthlyExpenses += totalMonthlyCost;
+                }
+            }
+
+            // Apply oneTimeExpense modifier: add expense hit in specific month
+            if (oneTimeExpense && i === oneTimeExpense.month) {
+                oneTimeImpact -= oneTimeExpense.amount;
+            }
+
+            // Apply payoffDebt modifier: subtract from cash in specific month
+            if (payoffDebt) {
+                const debtMonth = payoffDebt.month ?? 0;
+                if (i === debtMonth) {
+                    oneTimeImpact -= payoffDebt.amount;
+                }
+            }
 
             // Calculate net change
-            const netChangeBase = projectedIncome - projectedExpenses;
+            const netChangeBase = monthlyIncome - monthlyExpenses;
             const arApImpactThisMonth = arApMonthlyImpact[i] || 0;
-            const projectedNetChange = netChangeBase + arApImpactThisMonth;
+            const projectedNetChange = netChangeBase + arApImpactThisMonth + oneTimeImpact;
 
             // Update running balance
             runningCashBalance += projectedNetChange;
 
             forecast.push({
                 month: format(currentProjectionDate, 'MMM yyyy'),
-                projected_income: Math.round(projectedIncome),
-                projected_expenses: Math.round(projectedExpenses),
+                projected_income: Math.round(monthlyIncome),
+                projected_expenses: Math.round(monthlyExpenses),
                 projected_net_change: Math.round(projectedNetChange),
                 projected_balance: Math.round(runningCashBalance),
             });

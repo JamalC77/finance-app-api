@@ -122,6 +122,19 @@ export interface CategoryItem {
     amount: number;
 }
 
+// Customer AR Detail Type - for customer-level receivables breakdown
+export interface CustomerARDetail {
+    customerId: string;
+    customerName: string;
+    totalOutstanding: number;
+    current: number;        // 0-30 days (not yet due or current)
+    overdue1_30: number;    // 1-30 days overdue
+    overdue31_60: number;   // 31-60 days overdue
+    overdue61_90: number;   // 61-90 days overdue
+    overdue90Plus: number;  // 90+ days overdue
+    oldestInvoiceDays: number;
+}
+
 
 // --- Helper Functions ---
 
@@ -698,4 +711,215 @@ export const extractTopExpenseCategories = (
         .map(([category, amount]) => ({ category, amount: Math.round(amount * 100) / 100 })) // Keep cents
         .sort((a, b) => b.amount - a.amount) // Sort descending
         .slice(0, 10); // Return top 10
+};
+
+
+/**
+ * Parses the QuickBooks AgedReceivables report to extract customer-level AR breakdown.
+ * The report structure typically has columns: Customer, Current, 1-30, 31-60, 61-90, 91+, Total
+ */
+export const parseAgedReceivablesReport = (report: any): CustomerARDetail[] => {
+    if (!report?.Rows?.Row) {
+        console.warn("[Parser] AgedReceivables report is missing Rows.");
+        return [];
+    }
+
+    const results: CustomerARDetail[] = [];
+    const columns = report.Columns?.Column || [];
+    
+    // Identify column indices based on column titles
+    // QuickBooks AgedReceivables columns are typically: Customer, Current, 1-30, 31-60, 61-90, 91 and over, Total
+    let currentIdx = -1;
+    let overdue1_30Idx = -1;
+    let overdue31_60Idx = -1;
+    let overdue61_90Idx = -1;
+    let overdue90PlusIdx = -1;
+    let totalIdx = -1;
+
+    columns.forEach((col: any, idx: number) => {
+        const title = (col.ColTitle || '').toLowerCase().trim();
+        if (title === 'current' || title === 'not due') {
+            currentIdx = idx;
+        } else if (title === '1 - 30' || title === '1-30') {
+            overdue1_30Idx = idx;
+        } else if (title === '31 - 60' || title === '31-60') {
+            overdue31_60Idx = idx;
+        } else if (title === '61 - 90' || title === '61-90') {
+            overdue61_90Idx = idx;
+        } else if (title.includes('91') || title.includes('90+') || title.includes('over 90')) {
+            overdue90PlusIdx = idx;
+        } else if (title === 'total' || title === 'amount') {
+            totalIdx = idx;
+        }
+    });
+
+    console.log(`[Parser] AgedReceivables column indices - Current: ${currentIdx}, 1-30: ${overdue1_30Idx}, 31-60: ${overdue31_60Idx}, 61-90: ${overdue61_90Idx}, 90+: ${overdue90PlusIdx}, Total: ${totalIdx}`);
+
+    // Recursive function to extract customer rows
+    const extractCustomerRows = (rows: any[]) => {
+        if (!rows) return;
+
+        for (const row of rows) {
+            // Skip section headers and totals
+            if (row.type === 'Section' && row.Rows?.Row) {
+                extractCustomerRows(row.Rows.Row);
+                continue;
+            }
+
+            // Process data rows (customer rows)
+            const colData = row.ColData;
+            if (!colData || colData.length === 0) continue;
+
+            const customerName = (colData[0]?.value || '').trim();
+            const customerId = colData[0]?.id || customerName; // Use name as fallback ID
+
+            // Skip total rows and empty names
+            if (!customerName || customerName.toLowerCase() === 'total' || customerName.toLowerCase().startsWith('total ')) {
+                continue;
+            }
+
+            // Extract values from each aging bucket
+            const current = currentIdx >= 0 ? safeParseFloat(colData[currentIdx]?.value) : 0;
+            const overdue1_30 = overdue1_30Idx >= 0 ? safeParseFloat(colData[overdue1_30Idx]?.value) : 0;
+            const overdue31_60 = overdue31_60Idx >= 0 ? safeParseFloat(colData[overdue31_60Idx]?.value) : 0;
+            const overdue61_90 = overdue61_90Idx >= 0 ? safeParseFloat(colData[overdue61_90Idx]?.value) : 0;
+            const overdue90Plus = overdue90PlusIdx >= 0 ? safeParseFloat(colData[overdue90PlusIdx]?.value) : 0;
+            
+            // Calculate total - use reported total if available, otherwise sum the buckets
+            let total = totalIdx >= 0 ? safeParseFloat(colData[totalIdx]?.value) : 0;
+            if (total === 0) {
+                total = current + overdue1_30 + overdue31_60 + overdue61_90 + overdue90Plus;
+            }
+
+            // Skip customers with zero balance
+            if (total <= 0) continue;
+
+            // Estimate oldest invoice days based on which bucket has the oldest balance
+            let oldestInvoiceDays = 0;
+            if (overdue90Plus > 0) oldestInvoiceDays = 90;
+            else if (overdue61_90 > 0) oldestInvoiceDays = 75; // midpoint of 61-90
+            else if (overdue31_60 > 0) oldestInvoiceDays = 45; // midpoint of 31-60
+            else if (overdue1_30 > 0) oldestInvoiceDays = 15;  // midpoint of 1-30
+            else oldestInvoiceDays = 0; // current
+
+            results.push({
+                customerId,
+                customerName,
+                totalOutstanding: Math.round(total * 100) / 100,
+                current: Math.round(current * 100) / 100,
+                overdue1_30: Math.round(overdue1_30 * 100) / 100,
+                overdue31_60: Math.round(overdue31_60 * 100) / 100,
+                overdue61_90: Math.round(overdue61_90 * 100) / 100,
+                overdue90Plus: Math.round(overdue90Plus * 100) / 100,
+                oldestInvoiceDays
+            });
+
+            // Also check for nested rows (sub-customers)
+            if (row.Rows?.Row) {
+                extractCustomerRows(row.Rows.Row);
+            }
+        }
+    };
+
+    extractCustomerRows(report.Rows.Row);
+
+    // Sort by total outstanding descending
+    results.sort((a, b) => b.totalOutstanding - a.totalOutstanding);
+
+    console.log(`[Parser] Parsed ${results.length} customers from AgedReceivables report.`);
+    return results;
+};
+
+
+/**
+ * Builds customer-level AR breakdown from open invoices data.
+ * This is a fallback when the AgedReceivables report is not available.
+ * Groups open invoices by customer and calculates aging buckets.
+ */
+export const buildTopCustomersByOutstanding = (
+    openInvoices: any[],
+    customers: any[]
+): CustomerARDetail[] => {
+    if (!openInvoices || openInvoices.length === 0) {
+        console.warn("[Parser] No open invoices to build customer AR from.");
+        return [];
+    }
+
+    const today = new Date();
+    const customerMap = new Map(customers.map(c => [c.Id, c.DisplayName || c.CompanyName || c.GivenName || `Customer ${c.Id}`]));
+    
+    // Map to accumulate AR per customer
+    const arMap = new Map<string, CustomerARDetail>();
+
+    openInvoices.forEach(inv => {
+        const balance = safeParseFloat(inv.Balance);
+        if (balance <= 0) return;
+
+        const custRef = inv.CustomerRef?.value;
+        if (!custRef) return;
+
+        const customerName = customerMap.get(custRef) || inv.CustomerRef?.name || `Customer ${custRef}`;
+        
+        // Calculate days overdue
+        const dueDate = parseQBDate(inv.DueDate);
+        const txnDate = parseQBDate(inv.TxnDate);
+        const refDate = dueDate || txnDate;
+        
+        let daysOverdue = 0;
+        if (refDate && isValid(refDate)) {
+            daysOverdue = differenceInDays(today, refDate);
+        }
+
+        // Get or create customer entry
+        if (!arMap.has(custRef)) {
+            arMap.set(custRef, {
+                customerId: custRef,
+                customerName,
+                totalOutstanding: 0,
+                current: 0,
+                overdue1_30: 0,
+                overdue31_60: 0,
+                overdue61_90: 0,
+                overdue90Plus: 0,
+                oldestInvoiceDays: 0
+            });
+        }
+
+        const custAR = arMap.get(custRef)!;
+        custAR.totalOutstanding += balance;
+
+        // Bucket the balance by aging
+        if (daysOverdue <= 0) {
+            custAR.current += balance;
+        } else if (daysOverdue <= 30) {
+            custAR.overdue1_30 += balance;
+        } else if (daysOverdue <= 60) {
+            custAR.overdue31_60 += balance;
+        } else if (daysOverdue <= 90) {
+            custAR.overdue61_90 += balance;
+        } else {
+            custAR.overdue90Plus += balance;
+        }
+
+        // Track oldest invoice
+        if (daysOverdue > custAR.oldestInvoiceDays) {
+            custAR.oldestInvoiceDays = daysOverdue;
+        }
+    });
+
+    // Convert to array, round values, and sort
+    const results = Array.from(arMap.values())
+        .map(ar => ({
+            ...ar,
+            totalOutstanding: Math.round(ar.totalOutstanding * 100) / 100,
+            current: Math.round(ar.current * 100) / 100,
+            overdue1_30: Math.round(ar.overdue1_30 * 100) / 100,
+            overdue31_60: Math.round(ar.overdue31_60 * 100) / 100,
+            overdue61_90: Math.round(ar.overdue61_90 * 100) / 100,
+            overdue90Plus: Math.round(ar.overdue90Plus * 100) / 100
+        }))
+        .sort((a, b) => b.totalOutstanding - a.totalOutstanding);
+
+    console.log(`[Parser] Built AR breakdown for ${results.length} customers from open invoices.`);
+    return results;
 };

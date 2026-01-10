@@ -419,6 +419,58 @@ router.get('/dashboard', authMiddleware, async (req, res) => {
 });
 
 /**
+ * Scenario Planning routes
+ */
+
+// Run a what-if scenario
+router.post('/scenarios/run', authMiddleware, async (req, res) => {
+  try {
+    console.log('📊 [QB ROUTE] Scenario planning request received');
+
+    if (!req.user) {
+      return res.status(401).json(formatErrorResponse({
+        statusCode: 401,
+        message: 'User not authenticated'
+      }));
+    }
+
+    const organizationId = req.user.organizationId;
+    const scenarioParams = req.body;
+
+    // Validate required fields
+    if (!scenarioParams || !scenarioParams.name) {
+      return res.status(400).json(formatErrorResponse({
+        statusCode: 400,
+        message: 'Scenario name is required'
+      }));
+    }
+
+    console.log(`📊 [QB ROUTE] Running scenario "${scenarioParams.name}" for org: ${organizationId}`);
+
+    // Check QuickBooks connection
+    const connection = await quickbooksConnectionController.getConnection(organizationId);
+    if (!connection.connected) {
+      return res.status(400).json(formatErrorResponse({
+        statusCode: 400,
+        message: 'No active QuickBooks connection'
+      }));
+    }
+
+    // Run scenario
+    const result = await quickbooksDashboardController.runScenario(organizationId, scenarioParams);
+
+    console.log(`✅ [QB ROUTE] Scenario "${scenarioParams.name}" completed successfully`);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('❌ [QB ROUTE] Error running scenario:', error);
+    res.status(500).json(formatErrorResponse({
+      statusCode: 500,
+      message: error instanceof Error ? error.message : 'Failed to run scenario'
+    }));
+  }
+});
+
+/**
  * Test routes
  */
 router.get('/test', (req, res) => {

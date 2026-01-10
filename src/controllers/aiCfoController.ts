@@ -18,6 +18,19 @@ interface AskQuestionParams {
   conversationHistory?: ConversationMessage[];
 }
 
+// Customer AR Detail - matches the type from quickbooksReportParser
+interface CustomerARDetail {
+  customerId: string;
+  customerName: string;
+  totalOutstanding: number;
+  current: number;
+  overdue1_30: number;
+  overdue31_60: number;
+  overdue61_90: number;
+  overdue90Plus: number;
+  oldestInvoiceDays: number;
+}
+
 interface FinancialContext {
   companyName: string;
   cash: { balance: number; changePercentage: number };
@@ -34,6 +47,7 @@ interface FinancialContext {
   cashFlowForecast: any;
   topCustomers: any[];
   topExpenseCategories: any[];
+  customerARDetails: CustomerARDetail[]; // Customer-level AR breakdown
   advancedMetrics: any;
   lastRefreshed: string;
 }
@@ -72,6 +86,7 @@ class AiCfoController {
         cashFlowForecast: dashboardData.cashFlowForecast,
         topCustomers: dashboardData.topCustomers,
         topExpenseCategories: dashboardData.topExpenseCategories,
+        customerARDetails: dashboardData.customerARDetails || [], // Customer-level AR breakdown
         advancedMetrics: dashboardData.advancedMetrics,
         lastRefreshed: dashboardData.lastRefreshed,
       };
@@ -189,8 +204,18 @@ class AiCfoController {
 - 90+ days: ${formatCurrency(context.agingAP["90+"])}
 - Days Payable Outstanding (DPO): ${context.efficiency.dpo.toFixed(0)} days
 
-### Top Customers by Outstanding AR
-${context.topCustomers.slice(0, 5).map((c, i) => `${i + 1}. ${c.name}: ${formatCurrency(c.balance)} (${c.daysOutstanding || 0} days avg)`).join("\n")}
+### Largest Outstanding Receivables by Customer
+${context.customerARDetails.length > 0 
+  ? context.customerARDetails.slice(0, 10).map((c, i) => {
+      const overdueAmount = c.overdue31_60 + c.overdue61_90 + c.overdue90Plus;
+      const overdueInfo = c.overdue90Plus > 0 
+        ? `(${formatCurrency(c.overdue90Plus)} over 90 days - HIGH RISK)` 
+        : overdueAmount > 0 
+          ? `(${formatCurrency(overdueAmount)} overdue)` 
+          : '(current)';
+      return `${i + 1}. ${c.customerName}: ${formatCurrency(c.totalOutstanding)} ${overdueInfo}`;
+    }).join("\n")
+  : "Customer-level AR data not available"}
 
 ### Top Expense Categories (This Month)
 ${context.topExpenseCategories.slice(0, 5).map((e, i) => `${i + 1}. ${e.name}: ${formatCurrency(e.amount)}`).join("\n")}
@@ -204,12 +229,14 @@ ${context.cashFlowForecast?.projections?.slice(0, 3).map((p: any) => `- ${p.mont
 ## Response Guidelines
 1. Always cite specific numbers from the data above when relevant
 2. For "can I afford X" questions, calculate the impact on runway and cash position
-3. For collection priorities, rank by amount AND days overdue
-4. For expense questions, compare to revenue and industry benchmarks
-5. Provide a clear recommendation with reasoning
-6. If a question requires data you don't have, say what's missing
-7. Keep responses concise but complete - aim for 2-4 paragraphs max
-8. Use bullet points for action items or multiple recommendations
+3. For collection priorities, rank by amount AND days overdue - use the "Largest Outstanding Receivables by Customer" section to identify specific customers
+4. For "largest receivable" or "biggest AR" questions, reference the customer-level breakdown above
+5. For expense questions, compare to revenue and historical trends
+6. Provide a clear recommendation with reasoning
+7. If a question requires data you don't have, say what's missing
+8. Keep responses concise but complete - aim for 2-4 paragraphs max
+9. Use bullet points for action items or multiple recommendations
+10. When discussing collection priorities, highlight customers with 90+ day balances as HIGH RISK
 
 Remember: You're helping a business owner make better financial decisions. Be their trusted advisor.`;
   }

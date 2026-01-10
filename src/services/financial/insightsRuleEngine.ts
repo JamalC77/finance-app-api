@@ -65,8 +65,6 @@ interface CashFlowForecastItem {
     projected_balance: number;
 }
 
-interface IndustryBenchmark { metric: string; average: number; /* ... */ }
-
 interface InsightsInput {
     metrics: CoreMetrics;
     ratios: FinancialRatios;
@@ -74,7 +72,6 @@ interface InsightsInput {
     aging: AgingData;
     runway: number | null; // months
     forecast: CashFlowForecastItem[];
-    benchmarks?: IndustryBenchmark[]; // Optional benchmark data
 }
 
 interface BusinessInsight {
@@ -98,18 +95,13 @@ class InsightsService {
         }
     }
 
-     // Helper to find a benchmark value
-    private getBenchmark(benchmarks: IndustryBenchmark[] | undefined, metric: string): number | undefined {
-        return benchmarks?.find(b => b.metric === metric)?.average;
-    }
-
     /**
      * Generates insights based on financial data.
      * This is a rule-based engine. Could be enhanced with ML later.
      */
     generateInsights(input: InsightsInput): BusinessInsight[] {
         this.insights = []; // Reset for each run
-        const { metrics, ratios, trends, aging, runway, forecast, benchmarks } = input;
+        const { metrics, ratios, trends, aging, runway, forecast } = input;
 
         // --- Critical Insights (Priority 9-10) ---
         if (runway !== null && runway >= 0 && runway < 1.5) {
@@ -162,15 +154,6 @@ class InsightsService {
                  actionText: "Analyze Payment Terms",
             });
          }
-         const dsoBenchmark = this.getBenchmark(benchmarks, 'dso');
-         if (dsoBenchmark && metrics.dso > dsoBenchmark * 1.3) { // >30% higher than benchmark
-             this.addInsight({
-                type: "warning", priority: 6, title: "DSO Significantly Higher Than Industry",
-                description: `Your DSO (${metrics.dso} days) is notably higher than the industry average (${dsoBenchmark.toFixed(0)} days). This could indicate less efficient collection processes compared to peers.`,
-                relatedMetric: "efficiency",
-            });
-         }
-
 
          if ((ratios.netProfitMargin !== null && ratios.netProfitMargin < 5) || (ratios.operatingProfitMargin !== null && ratios.operatingProfitMargin < 8)) {
              this.addInsight({
@@ -203,15 +186,6 @@ class InsightsService {
                  type: "success", priority: 4, title: "Healthy Cash Runway",
                  description: `You have over 9 months of cash runway (${runway.toFixed(1)} months), providing a good buffer.`,
                  relatedMetric: "runwayMonths",
-            });
-         }
-
-         const npmBenchmark = this.getBenchmark(benchmarks, 'netProfitMargin');
-         if (ratios.netProfitMargin !== null && npmBenchmark && ratios.netProfitMargin > npmBenchmark * 1.1) {
-            this.addInsight({
-                type: "success", priority: 4, title: "Strong Net Profit Margin vs Industry",
-                description: `Your net profit margin (${formatPercentage(ratios.netProfitMargin)}) is performing well compared to the industry average (${formatPercentage(npmBenchmark)}).`,
-                relatedMetric: "margins",
             });
          }
 
