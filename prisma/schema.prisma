@@ -573,3 +573,76 @@ enum PlanType {
   PREMIUM
   ENTERPRISE
 }
+
+// ============================================
+// LEAD CAPTURE MODELS
+// ============================================
+
+model Lead {
+  id              String        @id @default(cuid())
+  sessionId       String        @unique // Browser session identifier
+  email           String?       // Captured email (nullable until they provide it)
+  companyName     String?
+  contactName     String?
+  phone           String?
+  revenueRange    String?       // e.g., "1M-5M", "5M-10M", "10M-25M", "25M-50M"
+  painPoints      String[]      // Array of identified pain points
+  industry        String?
+  status          LeadStatus    @default(NEW)
+  source          String?       // UTM source or referrer
+  utmCampaign     String?
+  utmMedium       String?
+  ipAddress       String?       // For rate limiting and fraud detection
+  userAgent       String?
+  calendlyBooked  Boolean       @default(false)
+  calendlyEventAt DateTime?
+  qualificationScore Int        @default(0) // 0-100 based on conversation
+  notes           String?       // Internal notes
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  messages        LeadMessage[]
+
+  @@index([email])
+  @@index([status])
+  @@index([createdAt])
+  @@index([sessionId])
+  @@map("leads")
+}
+
+model LeadMessage {
+  id        String   @id @default(cuid())
+  leadId    String
+  role      String   // "user" or "assistant"
+  content   String
+  metadata  Json?    // Store any extracted data (email, company, etc.)
+  createdAt DateTime @default(now())
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@map("lead_messages")
+}
+
+// Rate limiting tracking for public endpoints
+model RateLimitRecord {
+  id         String   @id @default(cuid())
+  identifier String   // IP address or session ID
+  endpoint   String   // Which endpoint was hit
+  count      Int      @default(1)
+  windowStart DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@unique([identifier, endpoint, windowStart])
+  @@index([identifier, endpoint])
+  @@index([windowStart])
+  @@map("rate_limit_records")
+}
+
+enum LeadStatus {
+  NEW           // Just started chatting
+  ENGAGED       // Multiple messages exchanged
+  QUALIFIED     // Provided email + revenue range
+  BOOKED        // Scheduled a call
+  CONVERTED     // Became a client
+  DISQUALIFIED  // Not a fit (too small, wrong industry, etc.)
+  STALE         // No activity for 7+ days
+}
