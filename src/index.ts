@@ -26,6 +26,7 @@ import insightsRoutes from './routes/insightsRoutes';
 import publicRoutes from './routes/publicRoutes';
 import snowflakeRoutes from './routes/snowflakeRoutes';
 import subscriptionRoutes from './routes/subscriptionRoutes';
+import aiCfoRoutes from './routes/aiCfoRoutes';
 
 // Create Express app
 const app = express();
@@ -83,6 +84,7 @@ app.use('/api/quickbooks', noCache, quickbooksRoutes);
 app.use('/api/insights', noCache, insightsRoutes);
 app.use('/api/snowflake', noCache, snowflakeRoutes);
 app.use('/api/subscriptions', noCache, subscriptionRoutes);
+app.use('/api/ai-cfo', noCache, aiCfoRoutes);
 
 // Public routes (no auth required for invoice viewing/payment)
 app.use('/api/public', publicRoutes);

@@ -27,6 +27,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "@google-cloud/bigquery": "^7.9.2",
     "@google-cloud/storage": "^7.15.2",
     "@prisma/client": "^5.3.1",
