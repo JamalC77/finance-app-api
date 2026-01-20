@@ -1,10 +1,5 @@
 import { Router } from 'express';
 import * as publicController from '../controllers/publicController';
-import { leadChatController } from '../controllers/leadChatController';
-import {
-  chatRateLimiter,
-  sessionStartRateLimiter
-} from '../middleware/rateLimitMiddleware';
 
 const router = Router();
 
@@ -25,58 +20,6 @@ router.get('/invoices/:id', publicController.getPublicInvoice);
  * @access  Public
  */
 router.post('/payments/create-payment-intent', publicController.createPublicPaymentIntent);
-
-// ============================================
-// LEAD CHAT ROUTES
-// ============================================
-
-/**
- * @route   POST /api/public/chat/start
- * @desc    Start a new chat session or resume existing one
- * @access  Public (rate limited: 5 new sessions per IP per hour)
- */
-router.post(
-  '/chat/start',
-  sessionStartRateLimiter,
-  (req, res, next) => {
-    leadChatController.startSession(req, res).catch(next);
-  }
-);
-
-/**
- * @route   POST /api/public/chat/message
- * @desc    Send a message in an existing chat session
- * @access  Public (rate limited: 20 messages per minute)
- */
-router.post(
-  '/chat/message',
-  chatRateLimiter,
-  (req, res, next) => {
-    leadChatController.sendMessage(req, res).catch(next);
-  }
-);
-
-/**
- * @route   POST /api/public/chat/calendly-clicked
- * @desc    Track when user clicks the Calendly link
- * @access  Public
- */
-router.post(
-  '/chat/calendly-clicked',
-  chatRateLimiter,
-  (req, res, next) => {
-    leadChatController.markCalendlyClicked(req, res).catch(next);
-  }
-);
-
-/**
- * @route   GET /api/public/chat/calendly-url
- * @desc    Get the Calendly booking URL
- * @access  Public
- */
-router.get('/chat/calendly-url', (req, res) => {
-  leadChatController.getCalendlyUrl(req, res);
-});
 
 // ============================================
 // HEALTH CHECK
