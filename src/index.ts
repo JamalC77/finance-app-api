@@ -24,6 +24,7 @@ import categoryRoutes from './routes/categoryRoutes';
 import quickbooksRoutes from './routes/quickbooksRoutes';
 import insightsRoutes from './routes/insightsRoutes';
 import publicRoutes from './routes/publicRoutes';
+import publicChatRoutes from './routes/publicChatRoutes';
 import snowflakeRoutes from './routes/snowflakeRoutes';
 import subscriptionRoutes from './routes/subscriptionRoutes';
 import aiCfoRoutes from './routes/aiCfoRoutes';
@@ -88,6 +89,9 @@ app.use('/api/ai-cfo', noCache, aiCfoRoutes);
 
 // Public routes (no auth required for invoice viewing/payment)
 app.use('/api/public', publicRoutes);
+
+// Public chat routes (no auth required for lead gen chat)
+app.use('/api/public/chat', publicChatRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
