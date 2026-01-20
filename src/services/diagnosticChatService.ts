@@ -110,11 +110,17 @@ interface ChatSessionWithMessages extends ChatSession {
   messages: ChatMessage[];
 }
 
+// Demo panel types for the interactive demo
+type DemoPanelType = 'cashflow' | 'pnl' | 'ar' | 'providers' | null;
+type DemoHighlightType = 'janfeb' | 'conversion' | 'metrics' | 'margin' | 'services' | 'aging' | 'utilization' | 'drpark' | null;
+
 interface SendMessageResult {
   response: string;
   quickPrompts: string[];
   stage: ConversationStage;
   ctaOffered: boolean;
+  demoPanel?: DemoPanelType;
+  demoHighlight?: DemoHighlightType;
 }
 
 class DiagnosticChatService {
@@ -271,14 +277,17 @@ class DiagnosticChatService {
       ],
     });
 
-    const assistantMessage = response.content[0].type === "text"
+    const rawAssistantMessage = response.content[0].type === "text"
       ? response.content[0].text
       : "";
+
+    // Parse any [SHOW:*] tags from the AI response
+    const { cleanMessage: assistantMessage, demoPanel, demoHighlight } = this.parseDemoTags(rawAssistantMessage);
 
     // Determine quick prompts for next turn
     const quickPrompts = this.getQuickPromptsForStage(nextStage, updatedPainPoints);
 
-    // Save assistant message
+    // Save assistant message (with tags stripped)
     await prisma.chatMessage.create({
       data: {
         sessionId: session.id,
@@ -288,6 +297,8 @@ class DiagnosticChatService {
           quickPrompts,
           stage: nextStage,
           ctaOffered: shouldOfferCta,
+          demoPanel,
+          demoHighlight,
         },
         tokenCount: response.usage.output_tokens,
       },
@@ -323,6 +334,8 @@ class DiagnosticChatService {
       quickPrompts,
       stage: nextStage,
       ctaOffered: shouldOfferCta,
+      demoPanel,
+      demoHighlight,
     };
   }
 
@@ -521,7 +534,93 @@ The call is often the better first step - it's free and lets us understand their
 - Acknowledge their challenges empathetically - growth is hard
 - Use "you/your" not "one/one's"
 - Match their energy - if they're frustrated, acknowledge it
-- Treat every prospect with respect regardless of their business size`;
+- Treat every prospect with respect regardless of their business size
+
+## Interactive Demo Dashboard - USE THIS EAGERLY!
+When a prospect mentions a problem, SHOW them what you're talking about! The demo shows data from "Glow Aesthetics" - a $3.88M med spa with 2 locations.
+
+**BE PROACTIVE**: As soon as someone mentions cash flow, profitability, collections, margins, or team performance - show the relevant dashboard.
+
+**CRITICAL RULE: Only reference data that appears on the SPECIFIC panel you're showing!**
+
+Each panel shows DIFFERENT data. When you use a [SHOW:*] tag, ONLY mention the numbers that are actually visible on that panel:
+
+---
+**[SHOW:pnl] or [SHOW:pnl:metrics] - P&L Panel shows:**
+- 4 metric cards: TTM Revenue $3.88M (+21% YoY), Gross Margin 78.4%, Net Margin 24.8%, YoY Growth +21%
+- Revenue & Margin Trend chart (monthly revenue and net income over 12 months)
+- Monthly range: $267K (Jan) to $392K (Jun)
+- DO NOT mention: providers, utilization, AR aging, cash balance, DSO
+
+**[SHOW:pnl:margin] - P&L Panel with margin cards highlighted shows:**
+- Same as above, with Gross Margin (78.4%) and Net Margin (24.8%) cards highlighted
+- Use this when discussing margins specifically
+- DO NOT mention: providers, utilization, AR aging, cash balance
+
+**[SHOW:pnl:services] - P&L Panel + Service Breakdown shows:**
+- All of the above PLUS Revenue by Service Line breakdown:
+  - Injectables: $189K (64% margin)
+  - Laser: $98K (71% margin)
+  - Facials: $67K (68% margin)
+  - Body: $54K (58% margin)
+  - Retail: $34K (42% margin)
+- DO NOT mention: providers, utilization, AR aging, cash balance
+
+---
+**[SHOW:cashflow] or [SHOW:cashflow:janfeb] - Cash Flow Panel shows:**
+- 4 metric cards: Cash Balance $310K, DSO 38 days, Cash Conversion Cycle 42 days, Quick Ratio 2.1
+- Cash Flow Trend chart showing Net Cash and Balance over 12 months
+- Seasonal dip visible: Jan (-$42K), Feb (-$30K) negative cash months
+- Balance dropped from $260K (Nov) to $185K (Mar)
+- DO NOT mention: providers, utilization, service breakdown, gross/net margin percentages
+
+**[SHOW:cashflow:conversion] - Cash Flow Panel with conversion metrics highlighted:**
+- Same as above with DSO and Cash Conversion Cycle cards highlighted
+
+---
+**[SHOW:ar] or [SHOW:ar:aging] - AR Aging Panel shows:**
+- 4 metric cards: Total AR $124K, Avg DSO 38 days, Over 60 Days 9%, Collection Rate 94%
+- AR Aging Buckets bar chart:
+  - Current: $67K (54%)
+  - 1-30 days: $31K (25%)
+  - 31-60 days: $15K (12%)
+  - 61-90 days: $7.4K (6%)
+  - 90+ days: $3.7K (3%)
+- DO NOT mention: providers, utilization, service breakdown, monthly revenue trends
+
+---
+**[SHOW:providers] or [SHOW:providers:utilization] - Provider Panel shows:**
+- Provider table with 5 rows showing: Name, Role, Revenue, Sessions, Avg Ticket, Utilization, Margin
+- Dr. Sarah Chen (Medical Director): $156K, 312 sessions, $500 avg, 87% utilization, 62% margin
+- Jessica Moore (NP): $134K, 402 sessions, $333 avg, 92% utilization, 58% margin
+- Amanda Torres (Aesthetician): $89K, 534 sessions, $167 avg, 78% utilization, 71% margin
+- Dr. Michael Park (PT MD): $67K, 134 sessions, $500 avg, 45% utilization, 54% margin - UNDERUTILIZED
+- Rachel Kim (Aesthetician): $54K, 324 sessions, $167 avg, 65% utilization, 68% margin
+- DO NOT mention: AR aging buckets, monthly cash flow, service breakdown
+
+**[SHOW:providers:drpark] - Provider Panel with Dr. Park row highlighted:**
+- Same as above with focus on Dr. Park's underutilization (45%)
+
+---
+
+**When to show each panel:**
+- Cash problems → [SHOW:cashflow] or [SHOW:cashflow:janfeb]
+- Profit/margin questions → [SHOW:pnl:margin]
+- Service mix/breakdown → [SHOW:pnl:services]
+- Collections/receivables → [SHOW:ar]
+- Team/utilization/capacity → [SHOW:providers]
+
+**Good examples (notice each ONLY mentions data visible on that panel):**
+
+"Cash feeling tight during growth is super common. Here's a $3.88M med spa - look at January and February, they went negative (-$42K and -$30K) even though the business is healthy. That timing gap between revenue and collections is probably what you're feeling. [SHOW:cashflow:janfeb]"
+
+"Good question on profitability. This business has 78.4% gross margin but 24.8% net margin - that 53-point gap is where all the operating costs live. The chart shows revenue and net income side by side so you can see the relationship. [SHOW:pnl:margin]"
+
+"Collections show up fast in the aging buckets. This business has 9% sitting past 60 days - about $11K that might not come in. What does your aging look like? [SHOW:ar]"
+
+"Team utilization is where hidden capacity lives. Look at Dr. Park - only 45% utilized versus Jessica at 92%. That's real revenue left on the table. [SHOW:providers]"
+
+**NEVER reference data from a different panel than the one you're showing!**`;
   }
 
   private extractDataFromMessage(
@@ -722,6 +821,40 @@ The call is often the better first step - it's free and lets us understand their
 
     // Dedupe and limit to 3
     return [...new Set(relevantPrompts)].slice(0, 3);
+  }
+
+  /**
+   * Parse [SHOW:panel] or [SHOW:panel:highlight] tags from AI response
+   * Returns the cleaned message and any demo panel/highlight info
+   */
+  private parseDemoTags(message: string): {
+    cleanMessage: string;
+    demoPanel: DemoPanelType;
+    demoHighlight: DemoHighlightType;
+  } {
+    // Match patterns like [SHOW:cashflow] or [SHOW:pnl:margin]
+    const tagPattern = /\[SHOW:(\w+)(?::(\w+))?\]/g;
+
+    let demoPanel: DemoPanelType = null;
+    let demoHighlight: DemoHighlightType = null;
+
+    // Find the last tag (in case there are multiple)
+    let match;
+    while ((match = tagPattern.exec(message)) !== null) {
+      const panel = match[1] as DemoPanelType;
+      const highlight = match[2] as DemoHighlightType || null;
+
+      // Validate panel type
+      if (['cashflow', 'pnl', 'ar', 'providers'].includes(panel)) {
+        demoPanel = panel;
+        demoHighlight = highlight;
+      }
+    }
+
+    // Remove all [SHOW:*] tags from the message
+    const cleanMessage = message.replace(tagPattern, '').trim();
+
+    return { cleanMessage, demoPanel, demoHighlight };
   }
 }
 
