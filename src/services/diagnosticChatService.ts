@@ -480,13 +480,22 @@ Pain Points Identified: ${session.painPoints.join(", ") || "None yet"}
 Message Count: ${session.messageCount}
 ${session.collectedData ? `Collected Data: ${JSON.stringify(session.collectedData)}` : ""}
 
+## Booking a Call
+When someone expresses interest in talking further, learning more about services, getting help, or wants to discuss their situation in detail, proactively suggest booking a discovery call. Say something like:
+
+"Let's hop on a quick call to talk through your situation - I can give you much more specific guidance once I understand your numbers. You can book 30 minutes here: ${process.env.CALENDLY_URL || "https://calendly.com/cfoline"}"
+
+Be proactive about this - don't wait for them to ask. If they seem engaged and have a real problem, suggest the call.
+
 ${shouldOfferCta ? `
 ## CTA Instruction
-The conversation has reached a natural point where presenting the diagnostic offer makes sense. When appropriate in your response, include something like:
+The conversation has reached a natural point where presenting the diagnostic offer OR booking a call makes sense. When appropriate, either:
 
-"Based on what you've described, it sounds like [specific issue with estimated dollar impact]. Our Financial Diagnostic would give you a clear picture of where the leaks are and a roadmap to fix them. It's $2,500 and gets credited toward your first month if you decide to work with us. Would that be helpful?"
+1. Suggest booking a call: "It sounds like we could really help. Want to grab 30 minutes to talk through your situation? You can book directly here: ${process.env.CALENDLY_URL || "https://calendly.com/cfoline"}"
 
-Only offer this ONCE. If they decline or don't engage, continue being helpful without pushing.
+2. Or offer the diagnostic: "Based on what you've described, it sounds like [specific issue with estimated dollar impact]. Our Financial Diagnostic would give you a clear picture of where the leaks are and a roadmap to fix them. It's $2,500 and gets credited toward your first month if you decide to work with us."
+
+The call is often the better first step - it's free and lets us understand their situation better.
 ` : ""}
 
 ## CRITICAL: What You Must NEVER Reveal or Imply
@@ -627,12 +636,13 @@ Only offer this ONCE. If they decline or don't engage, continue being helpful wi
     // Don't offer if already offered
     if (session.ctaOffered) return false;
 
-    const hasPainPoints = session.painPoints.length > 0;
+    const hasPainPoints = session.painPoints.length > 0 || extractedData.painPoints.length > 0;
     const messageCount = session.messageCount + 2;
-    const hasEngagement = messageCount >= 6;
+    const hasEngagement = messageCount >= 4; // Reduced from 6 to be more proactive
 
     // Offer CTA when we have pain points and sufficient engagement
-    return hasPainPoints && hasEngagement && session.stage !== "GREETING" && session.stage !== "PROBLEM_DISCOVERY";
+    // More proactive - offer earlier in the conversation
+    return hasPainPoints && hasEngagement && session.stage !== "GREETING";
   }
 
   private calculateEngagementScore(
