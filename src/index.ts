@@ -25,6 +25,7 @@ import quickbooksRoutes from './routes/quickbooksRoutes';
 import insightsRoutes from './routes/insightsRoutes';
 import publicRoutes from './routes/publicRoutes';
 import publicChatRoutes from './routes/publicChatRoutes';
+import prospectRoutes from './routes/prospectRoutes';
 import snowflakeRoutes from './routes/snowflakeRoutes';
 import subscriptionRoutes from './routes/subscriptionRoutes';
 import aiCfoRoutes from './routes/aiCfoRoutes';
@@ -92,6 +93,9 @@ app.use('/api/public', publicRoutes);
 
 // Public chat routes (no auth required for lead gen chat)
 app.use('/api/public/chat', publicChatRoutes);
+
+// Prospect intelligence pages (personalized landing pages)
+app.use('/api/public/prospect', prospectRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

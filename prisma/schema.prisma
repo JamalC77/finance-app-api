@@ -666,3 +666,77 @@ enum ConversationStage {
   CTA_PRESENTATION
   FOLLOW_UP
 }
+
+// ==========================================
+// Prospect Intelligence Pages - Tracking
+// ==========================================
+
+model ProspectChatSession {
+  id              String            @id @default(cuid())
+  sessionId       String            @unique
+  prospectSlug    String            // Links to JSON file, not DB record
+
+  stage           ConversationStage @default(GREETING)
+  painPoints      String[]          @default([])
+  collectedData   Json?
+  engagementScore Int               @default(0)
+  messageCount    Int               @default(0)
+  ctaOffered      Boolean           @default(false)
+  ctaClicked      Boolean           @default(false)
+
+  ipAddress       String?
+  userAgent       String?
+  utmSource       String?
+  utmCampaign     String?
+  utmMedium       String?
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  lastMessageAt   DateTime          @default(now())
+
+  messages        ProspectChatMessage[]
+
+  @@index([prospectSlug])
+  @@index([sessionId])
+  @@map("prospect_chat_sessions")
+}
+
+model ProspectChatMessage {
+  id         String              @id @default(cuid())
+  sessionId  String
+  session    ProspectChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  role       String              // "user" | "assistant"
+  content    String              @db.Text
+  metadata   Json?
+  tokenCount Int?
+
+  createdAt  DateTime            @default(now())
+
+  @@index([sessionId])
+  @@map("prospect_chat_messages")
+}
+
+model ProspectPageView {
+  id           String   @id @default(cuid())
+  prospectSlug String   // Links to JSON file, not DB record
+
+  visitorId   String?
+  ipAddress   String?
+  userAgent   String?
+  referrer    String?
+  utmSource   String?
+  utmCampaign String?
+  utmMedium   String?
+
+  timeOnPage  Int?
+  scrollDepth Float?
+  chatStarted Boolean  @default(false)
+  ctaClicked  Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+
+  @@index([prospectSlug])
+  @@index([createdAt])
+  @@map("prospect_page_views")
+}
