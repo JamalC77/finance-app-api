@@ -90,9 +90,36 @@
     ]
   },
 
+  "pitch": {
+    "estimates": [
+      {
+        "label": "Patient acquisition cost",
+        "value": "$300-700",
+        "caveat": "Though honestly, we're guessing at your ad spend. You might be at $900. You might be at $200.",
+        "kicker": "The fact that you don't know instantly is the problem we solve."
+      },
+      {
+        "label": "Injectables vs surgical profitability",
+        "value": "Unknown",
+        "caveat": "How does injectables profitability compare to surgical? Most practices don't actually know."
+      },
+      {
+        "label": "Review velocity",
+        "value": "Solid",
+        "caveat": "But which channels actually convert? Google? Instagram? Referrals?"
+      }
+    ],
+    "whatWeBuild": [
+      "True procedure margins (BBL vs lipo vs injectables)",
+      "Lead source ROI (where's the $10-20K/month actually going?)",
+      "Cash position clarity across CareCredit, PatientFi, Alphaeon, and Cherry"
+    ],
+    "closingLine": "Those gaps cost you more than we do."
+  },
+
   "cta": {
     "headline": "Your 30-Minute Financial Diagnostic",
-    "subhead": "We found this in public data. Imagine what we'd find with your actual books.",
+    "subhead": "Those gaps cost you more than we do.",
     "buttonText": "Book a Call with Brent",
     "calendarLink": "https://calendly.com/thecfoline/diagnostic"
   }

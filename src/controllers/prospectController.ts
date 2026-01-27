@@ -41,6 +41,7 @@ function loadProspectPublicData(slug: string) {
         question: pp.question,
         options: pp.options,
       })),
+      pitch: data.pitch,
       cta: data.cta,
     };
   } catch (error) {
