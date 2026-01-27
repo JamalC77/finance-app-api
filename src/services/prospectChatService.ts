@@ -91,11 +91,18 @@ interface SendMessageResult {
 
 // Load prospect configuration from JSON files
 function loadProspectConfig(slug: string): ProspectConfig | null {
-  const prospectsDir = path.resolve(process.cwd(), "../finance-app/content/prospects");
-  const filePath = path.join(prospectsDir, `${slug}.json`);
+  // In production: look in local content directory
+  // In development: also check sibling frontend directory as fallback
+  const localDir = path.resolve(process.cwd(), "content/prospects");
+  const siblingDir = path.resolve(process.cwd(), "../finance-app/content/prospects");
+
+  let filePath = path.join(localDir, `${slug}.json`);
+  if (!fs.existsSync(filePath)) {
+    filePath = path.join(siblingDir, `${slug}.json`);
+  }
 
   if (!fs.existsSync(filePath)) {
-    console.error(`Prospect config not found: ${filePath}`);
+    console.error(`Prospect config not found in ${localDir} or ${siblingDir}`);
     return null;
   }
 

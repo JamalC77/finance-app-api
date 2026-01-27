@@ -1,0 +1,99 @@
+{
+  "slug": "premiere-surgical-arts",
+  "companyName": "Premiere Surgical Arts",
+  "ownerName": "",
+  "location": "Houston, TX",
+  "industry": "Cosmetic Surgery + Med Spa",
+  "estimatedRevenue": "$3-5M",
+  "employeeCount": 23,
+
+  "intelCards": [
+    {
+      "id": "financing",
+      "icon": "CreditCard",
+      "title": "4 Financing Platforms",
+      "content": "CareCredit, PatientFi, Alphaeon, Cherry",
+      "alert": true
+    },
+    {
+      "id": "scale",
+      "icon": "Users",
+      "title": "~23 Employees",
+      "content": "$3-5M estimated revenue"
+    },
+    {
+      "id": "gap",
+      "icon": "AlertCircle",
+      "title": "No Finance Person",
+      "content": "No CFO or controller visible",
+      "alert": true
+    },
+    {
+      "id": "accreditation",
+      "icon": "Award",
+      "title": "AAHC Certified",
+      "content": "Accredited surgery center"
+    }
+  ],
+
+  "painPoints": [
+    {
+      "id": "revenue-recognition",
+      "title": "Revenue Recognition Complexity",
+      "summary": "4 financing platforms + deposits + payment timing = P&L is probably fiction",
+      "opener": "I noticed you're running 4 different financing platforms - CareCredit, PatientFi, Alphaeon, and Cherry. That's a lot of reconciliation.",
+      "question": "What's your biggest headache with that setup?",
+      "options": [
+        "Tracking payments across platforms",
+        "Knowing what we're actually owed",
+        "Revenue timing for taxes",
+        "Something else"
+      ]
+    },
+    {
+      "id": "procedure-margins",
+      "title": "Unknown Procedure Margins",
+      "summary": "BBL is the bread and butter but true cost is probably unknown",
+      "opener": "BBL is clearly your signature procedure. Most practices we work with don't actually know their true margin per procedure once you factor in OR time, supplies, nursing hours, and revision risk.",
+      "question": "Do you have visibility into your per-procedure profitability?",
+      "options": [
+        "We track it closely",
+        "We have a rough idea",
+        "Honestly, not really",
+        "I'm not sure"
+      ]
+    },
+    {
+      "id": "scaling-infrastructure",
+      "title": "Infrastructure Gap",
+      "summary": "23 employees, accredited surgery center, no finance person visible",
+      "opener": "You've grown to 23 people with an AAHC-accredited surgery center. That's real scale. But I didn't see a CFO or controller on your team.",
+      "question": "How are you handling the finance function right now?",
+      "options": [
+        "I do it myself",
+        "External accountant/bookkeeper",
+        "Office manager handles it",
+        "It's a bit of a mess"
+      ]
+    }
+  ],
+
+  "botContext": {
+    "systemPromptAdditions": "You are speaking with someone from Premiere Surgical Arts, a cosmetic surgery practice in Houston. They have about 23 employees, do high-ticket procedures (especially BBLs), and use 4 different patient financing platforms. They don't have a dedicated finance person. You don't know who exactly you're speaking with - it could be the owner, office manager, or someone else. Don't assume their role. Reference these business specifics naturally in conversation. Your goal is to surface their pain points around financial visibility and guide them toward booking a diagnostic call.",
+    "knownFacts": [
+      "They accept CareCredit, PatientFi, Alphaeon, and Cherry Financing",
+      "Balance is due 14 days before surgery",
+      "They posted for an RN in June 2025",
+      "BBL is their signature procedure",
+      "AAHC certified surgery center",
+      "No cash accepted, cards only in-office"
+    ]
+  },
+
+  "cta": {
+    "headline": "Your 30-Minute Financial Diagnostic",
+    "subhead": "We found this in public data. Imagine what we'd find with your actual books.",
+    "buttonText": "Book a Call with Brent",
+    "calendarLink": "https://calendly.com/thecfoline/diagnostic"
+  }
+}
