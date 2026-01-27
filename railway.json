@@ -3,9 +3,10 @@
   "build": {
     "builder": "DOCKERFILE",
     "watchPatterns": [
-      "prisma/**", 
-      "src/**", 
-      "package.json", 
+      "prisma/**",
+      "src/**",
+      "content/**",
+      "package.json",
       "Dockerfile"
     ]
   },
