@@ -29,6 +29,8 @@ import prospectRoutes from './routes/prospectRoutes';
 import snowflakeRoutes from './routes/snowflakeRoutes';
 import subscriptionRoutes from './routes/subscriptionRoutes';
 import aiCfoRoutes from './routes/aiCfoRoutes';
+import assemblyRoutes from './routes/assemblyRoutes';
+import cfoosRoutes from './routes/cfoosRoutes';
 
 // Create Express app
 const app = express();
@@ -96,6 +98,12 @@ app.use('/api/public/chat', publicChatRoutes);
 
 // Prospect intelligence pages (personalized landing pages)
 app.use('/api/public/prospect', prospectRoutes);
+
+// Assembly engine (public demo - dynamic dashboard generation)
+app.use('/api/assembly', assemblyRoutes);
+
+// CFOOS interactive demo (AI CFO chat + dashboard)
+app.use('/api/cfoos', cfoosRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
