@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
-import { AssemblyConfigSchema, AssemblyConfig } from '../types/assemblyConfig';
+import { AssemblyConfigSchema, AssemblyConfig, RunwayConfig, Status } from '../types/assemblyConfig';
 import { constructionDemoData } from '../data/constructionDemoData';
 
 // Ensure env vars are loaded
@@ -219,6 +219,37 @@ Props: { notes: Array<{ date: string, author: string, note: string }> }
 
 ## Assembly Config Schema
 {
+  "health_verdict": {
+    "status": "green|yellow|red",
+    "headline": "One human sentence: 'Your business is profitable but cash-vulnerable.'",
+    "sub_line": "Key metrics separated by · : '14.7% revenue growth · 10% EBITDA margin · Cash thin in W3 April'",
+    "priority_actions": [
+      {
+        "id": "unique-id",
+        "headline": "Action-oriented headline",
+        "detail": "One sentence with dollar impact",
+        "dollar_impact": "$68K",
+        "action": "Specific next step the owner can take",
+        "severity": "critical|warning|info",
+        "linked_section": "ComponentName (optional)",
+        "linked_detail": "detail-id (optional)",
+        "chat_prompt": "Question the owner can ask about this (optional)"
+      }
+    ]
+  },
+  "runway": {
+    "runway_weeks": 15,
+    "runway_label": "~15 weeks",
+    "status": "green|yellow|red",
+    "safety_threshold": 150000,
+    "monthly_burn": 117000,
+    "min_balance": 185000,
+    "min_balance_week": "W3 May",
+    "danger_weeks": ["W3 Mar", "W3 Apr", "W3 May"],
+    "forecast": [
+      { "week": "W1 Mar", "balance": 420000, "is_danger": false }
+    ]
+  },
   "executive_summary": {
     "headline": "string — one-sentence CFO summary of the business state",
     "kpis": [
@@ -250,7 +281,12 @@ Props: { notes: Array<{ date: string, author: string, note: string }> }
 6. Write CFO commentary that references specific data points
 7. Set scenario slider defaults based on current conditions
 8. Use the exact prop shapes defined above — the frontend will not accept other shapes
-9. Write ALL alert titles and messages in plain, conversational English — NOT accountant jargon. The audience is a business owner, not a CPA. Say "This job is losing money" not "Margin erosion detected". Say "You've done work you haven't billed for" not "WIP under-billing position". Reference specific dollar amounts and job names but explain what they mean in simple terms.`;
+9. Write ALL alert titles and messages in plain, conversational English — NOT accountant jargon. The audience is a business owner, not a CPA. Say "This job is losing money" not "Margin erosion detected". Say "You've done work you haven't billed for" not "WIP under-billing position". Reference specific dollar amounts and job names but explain what they mean in simple terms.
+10. Always generate health_verdict with status, headline (one human sentence a business owner understands), sub_line (key metrics with · separators), and 2-3 priority_actions with dollar impact, specific action verbs, and section links.
+11. Always generate runway from the cash forecast data. Calculate weeks until cash hits zero at current burn rate. Runway status: green if min balance > 2x safety threshold, yellow if > safety threshold, red if below. Mark weeks as is_danger when balance < safety_threshold + monthly_burn.
+12. Priority actions must be specific and actionable — "Schedule client meeting to sign COs" not "Review change orders". Each action references a dollar amount and links to a dashboard section.
+13. Health verdict headline should be one sentence: Healthy (green) = "Your business is healthy and growing." Watch (yellow) = "Your business is profitable but [specific risk]." Act Now (red) = "Your business needs immediate attention — [specific crisis]."
+14. Include Cash Runway as a 4th KPI alongside TTM Revenue, EBITDA Margin, and Backlog.`;
   }
 
   private buildUserMessage(data: typeof constructionDemoData): string {
@@ -299,15 +335,92 @@ Generate the assembly config JSON now.`;
     return JSON.parse(cleaned);
   }
 
-  private getFallbackConfig(): AssemblyConfig {
-    const data = constructionDemoData;
+  private calculateRunway(data: typeof constructionDemoData): RunwayConfig {
+    const safetyThreshold = 150000;
+    const monthlyBurn = data.flash_pnl.operating_expenses;
+    const weeklyBurn = monthlyBurn / 4.33;
+    const currentBalance = data.cash_forecast[0].balance;
+    const runwayWeeks = Math.floor(currentBalance / weeklyBurn);
+
+    const forecast = data.cash_forecast.map(w => ({
+      week: w.week,
+      balance: w.balance,
+      is_danger: w.balance < safetyThreshold + monthlyBurn,
+    }));
+
+    const dangerWeeks = forecast.filter(w => w.is_danger).map(w => w.week);
+    const minBalance = Math.min(...data.cash_forecast.map(w => w.balance));
+    const minBalanceWeek = data.cash_forecast.find(w => w.balance === minBalance)!.week;
+
+    const status: Status =
+      minBalance < safetyThreshold ? 'red' :
+      minBalance < safetyThreshold * 2 ? 'yellow' : 'green';
 
     return {
+      runway_weeks: runwayWeeks,
+      runway_label: runwayWeeks > 12 ? `${Math.round(runwayWeeks / 4.33)} months` : `~${runwayWeeks} weeks`,
+      status,
+      safety_threshold: safetyThreshold,
+      monthly_burn: monthlyBurn,
+      min_balance: minBalance,
+      min_balance_week: minBalanceWeek,
+      danger_weeks: dangerWeeks,
+      forecast,
+    };
+  }
+
+  private getFallbackConfig(): AssemblyConfig {
+    const data = constructionDemoData;
+    const runway = this.calculateRunway(data);
+
+    return {
+      health_verdict: {
+        status: 'yellow',
+        headline: 'Your business is profitable but cash-vulnerable.',
+        sub_line: '14.7% revenue growth \u00b7 10% EBITDA margin \u00b7 Cash gets dangerously thin in W3 April and W3 May',
+        priority_actions: [
+          {
+            id: 'memorial-cos',
+            headline: 'Memorial Renovation margin is slipping',
+            detail: '$68K in unsigned change orders \u2014 that\u2019s margin walking out the door.',
+            dollar_impact: '$68K',
+            action: 'Schedule client meeting to sign COs this week',
+            severity: 'critical',
+            linked_section: 'JobMarginTracker',
+            linked_detail: 'J-2404',
+            chat_prompt: 'Tell me more about Memorial Renovation',
+          },
+          {
+            id: 'unbilled-wip',
+            headline: '$312K in unbilled work across 5 jobs',
+            detail: 'That\u2019s your cash sitting in someone else\u2019s pocket.',
+            dollar_impact: '$312K',
+            action: 'Send draw requests for under-billed jobs',
+            severity: 'warning',
+            linked_section: 'WIPSnapshot',
+            linked_detail: 'underbilled',
+            chat_prompt: 'Which jobs have unbilled work?',
+          },
+          {
+            id: 'cash-floor',
+            headline: 'Cash floor hits $185K in May',
+            detail: '8 days of operating cash. Sub payments outpace draws in W3.',
+            dollar_impact: '$185K floor',
+            action: 'Accelerate draw requests for Westfield and Heights A',
+            severity: 'warning',
+            linked_section: 'CashFlowTiming',
+            linked_detail: 'W3',
+            chat_prompt: 'How bad could the May cash crunch get?',
+          },
+        ],
+      },
+      runway,
       executive_summary: {
         headline: `Summit Ridge Builders: $8.4M TTM revenue with margin pressure on 2 of 7 active jobs. Cash position stable but watch W3 dips.`,
         kpis: [
           { label: 'TTM Revenue', value: '$8.4M', status: 'green', trend: '+14.7% YoY', sub_text: 'Feb 2026' },
           { label: 'EBITDA Margin', value: '10.0%', status: 'red', trend: '-2% vs budget', sub_text: '$78K / $780K' },
+          { label: 'Cash Runway', value: runway.runway_label, status: runway.status, trend: `Floor: $${Math.round(runway.min_balance / 1000)}K ${runway.min_balance_week}`, sub_text: `${runway.danger_weeks.length} danger weeks` },
           { label: 'Backlog', value: '7.2 mo', status: 'green', trend: '$5.1M visibility', sub_text: '$3.2M contracted' },
         ],
       },

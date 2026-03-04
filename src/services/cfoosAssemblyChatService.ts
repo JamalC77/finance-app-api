@@ -157,6 +157,15 @@ Costs in Excess of Billings: $${(data.wip.total_costs_in_excess / 1000).toFixed(
 Billings in Excess of Costs: $${(data.wip.total_billings_in_excess / 1000).toFixed(0)}K (${data.wip.jobs_overbilled} jobs over-billed)
 Net Position: $${(data.wip.net_position / 1000).toFixed(0)}K ${data.wip.net_position_label}
 
+### Cash Runway
+Current cash: $${(data.cash_forecast[0].balance / 1000).toFixed(0)}K (${data.cash_forecast[0].week})
+Monthly operating expenses: $${(data.flash_pnl.operating_expenses / 1000).toFixed(0)}K
+Cash runway: ~${Math.floor(data.cash_forecast[0].balance / (data.flash_pnl.operating_expenses / 4.33))} weeks at current burn rate (but cash is lumpy, not linear)
+Safety threshold: $150K
+Danger weeks (balance < $267K): ${data.cash_forecast.filter(w => w.balance < 267000).map(w => `${w.week} ($${(w.balance / 1000).toFixed(0)}K)`).join(', ')}
+Cash floor: $${(Math.min(...data.cash_forecast.map(w => w.balance)) / 1000).toFixed(0)}K in ${data.cash_forecast.find(w => w.balance === Math.min(...data.cash_forecast.map(w2 => w2.balance)))!.week}
+Pattern: Sawtooth — subs get paid W3, draws come in W1/W2/W4
+
 ### CFO Notes
 ${data.cfo_notes.map((n) => `[${n.date}] ${n.author}: ${n.note}`).join('\n')}
 
@@ -171,7 +180,9 @@ The user sees a dashboard with these sections. Use [SHOW:ComponentName] to direc
 - **MonthlyTrend** — 6-month revenue bars + margin area chart
 - **ScenarioEngine** — Interactive sliders (revenue change, margin change, draw delay) with live forecast comparison
 - **Commentary** — CFO notes with dates
-- **KPIs** — Executive summary KPI cards (TTM revenue, EBITDA margin, backlog months)
+- **KPIs** — Executive summary KPI cards (TTM revenue, EBITDA margin, cash runway, backlog months)
+- **HealthVerdict** — Business health status banner (Healthy/Watch/Act Now) with priority actions
+- **RunwayCard** — Cash runway visualization showing weeks of cash remaining, danger weeks, and sawtooth cash pattern
 - **alerts** — Alert banners for threshold breaches
 
 ## Directives — USE THESE IN EVERY RESPONSE
@@ -183,6 +194,8 @@ Examples:
 - [SHOW:CashFlowTiming] — show full cash flow chart
 - [SHOW:FlashPNL] — show P&L snapshot
 - [SHOW:KPIs] — highlight executive KPI cards
+- [SHOW:HealthVerdict] — show health status and priority actions
+- [SHOW:RunwayCard] — show cash runway chart and danger weeks
 - [SHOW:ScenarioEngine] — open the what-if sliders
 
 ### [FOCUS:view]

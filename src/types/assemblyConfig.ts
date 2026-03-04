@@ -70,8 +70,55 @@ export const ExecutiveSummarySchema = z.object({
 });
 export type ExecutiveSummary = z.infer<typeof ExecutiveSummarySchema>;
 
+// Priority Action
+export const PriorityActionSchema = z.object({
+  id: z.string(),
+  headline: z.string(),
+  detail: z.string(),
+  dollar_impact: z.string(),
+  action: z.string(),
+  severity: z.enum(['critical', 'warning', 'info']),
+  linked_section: z.string().optional(),
+  linked_detail: z.string().optional(),
+  chat_prompt: z.string().optional(),
+});
+export type PriorityAction = z.infer<typeof PriorityActionSchema>;
+
+// Health Verdict
+export const HealthVerdictSchema = z.object({
+  status: StatusSchema,
+  headline: z.string(),
+  sub_line: z.string(),
+  priority_actions: z.array(PriorityActionSchema).max(3),
+});
+export type HealthVerdict = z.infer<typeof HealthVerdictSchema>;
+
+// Runway Week
+export const RunwayWeekSchema = z.object({
+  week: z.string(),
+  balance: z.number(),
+  is_danger: z.boolean(),
+});
+export type RunwayWeek = z.infer<typeof RunwayWeekSchema>;
+
+// Runway Config
+export const RunwayConfigSchema = z.object({
+  runway_weeks: z.number(),
+  runway_label: z.string(),
+  status: StatusSchema,
+  safety_threshold: z.number(),
+  monthly_burn: z.number(),
+  min_balance: z.number(),
+  min_balance_week: z.string(),
+  danger_weeks: z.array(z.string()),
+  forecast: z.array(RunwayWeekSchema),
+});
+export type RunwayConfig = z.infer<typeof RunwayConfigSchema>;
+
 // Top-level Assembly Config
 export const AssemblyConfigSchema = z.object({
+  health_verdict: HealthVerdictSchema.optional(),
+  runway: RunwayConfigSchema.optional(),
   executive_summary: ExecutiveSummarySchema,
   alerts: z.array(AlertConfigSchema),
   sections: z.array(SectionConfigSchema),
