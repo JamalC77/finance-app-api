@@ -116,9 +116,52 @@ export class QuickbooksAuthService {
     }
   }
 
+  // ==========================================
+  // Health Score Flow (public, no organizationId)
+  // ==========================================
+
+  /**
+   * Generate the authorization URL for the health score OAuth flow.
+   * Encodes { flow: 'health_score', prospectId } in the encrypted state.
+   */
+  getHealthScoreAuthUrl(prospectId: string): string {
+    const statePayload = JSON.stringify({ flow: 'health_score', prospectId });
+    const state = encryption.encryptState(statePayload);
+
+    const params = {
+      client_id: this.clientId,
+      redirect_uri: this.redirectUri,
+      response_type: 'code',
+      scope: 'com.intuit.quickbooks.accounting',
+      state,
+    };
+
+    const baseUrl = 'https://appcenter.intuit.com/connect/oauth2';
+    return `${baseUrl}?${querystring.stringify(params)}`;
+  }
+
+  /**
+   * Handle the OAuth callback for the health score flow.
+   * Exchanges code for tokens and stores them on the HealthScoreProspect.
+   */
+  async handleHealthScoreCallback(code: string, realmId: string): Promise<string> {
+    // Exchange authorization code for tokens
+    const tokenResponse = await this.getTokensFromCode(code);
+    console.log('[HS Auth] Token exchange successful');
+
+    // Find the prospect (we get the prospectId from the route handler, not here)
+    // Store tokens on prospect — the caller passes the prospectId separately
+    // Return the token data for the caller to store
+    return JSON.stringify({
+      accessToken: tokenResponse.access_token,
+      refreshToken: tokenResponse.refresh_token,
+      expiresIn: tokenResponse.expires_in,
+    });
+  }
+
   /**
    * Exchange authorization code for access and refresh tokens
-   * 
+   *
    * @param code The authorization code from QuickBooks
    * @returns Promise containing token response
    */

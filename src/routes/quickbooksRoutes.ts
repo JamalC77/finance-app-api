@@ -9,6 +9,8 @@ import { quickbooksDashboardController } from '../controllers/quickbooks/quickbo
 import { quickbooksApiClient } from '../services/quickbooks/quickbooksApiClient';
 import { Request, Response } from 'express';
 import { ApiError } from '../utils/errors';
+import { encryption } from '../utils/encryption';
+import { prisma } from '../utils/prisma';
 
 // Interface for JWT payload from auth middleware
 interface JwtPayload {
@@ -43,32 +45,69 @@ router.get('/auth/url', authMiddleware, async (req, res) => {
   }
 });
 
-// Handle OAuth callback
+// Handle OAuth callback (routes between org flow and health score flow)
 router.get('/callback', async (req, res) => {
   try {
     console.log('QuickBooks callback received:');
-    console.log('- Full URL:', req.protocol + '://' + req.get('host') + req.originalUrl);
     console.log('- Query params:', req.query);
-    
+
     const { code, state, realmId } = req.query as { code: string, state: string, realmId: string };
-    
+
     if (!code || !state || !realmId) {
       console.error('Missing required parameters in callback');
-      return res.status(400).json(formatErrorResponse({ 
-        statusCode: 400, 
-        message: 'Missing required parameters' 
+      return res.status(400).json(formatErrorResponse({
+        statusCode: 400,
+        message: 'Missing required parameters'
       }));
     }
-    
-    const organizationId = await quickbooksAuthService.handleCallback(code, state, realmId);
-    
-    // Redirect to frontend with success
-    const redirectUrl = `${process.env.FRONTEND_URL}/settings/integrations/quickbooks/success?organizationId=${organizationId}`;
-    console.log('Redirecting to:', redirectUrl);
-    res.redirect(redirectUrl);
+
+    // Detect flow type from encrypted state
+    const decryptedState = encryption.decryptState(state);
+    let stateData: { flow?: string; prospectId?: string };
+    try {
+      stateData = JSON.parse(decryptedState);
+    } catch {
+      // Legacy: plain organizationId string (CUIDs are never valid JSON)
+      stateData = { flow: 'org' };
+    }
+
+    if (stateData.flow === 'health_score' && stateData.prospectId) {
+      // --- Health Score Flow ---
+      console.log('[HS Callback] Health score flow for prospect:', stateData.prospectId);
+
+      // Exchange code for tokens
+      const tokenDataJson = await quickbooksAuthService.handleHealthScoreCallback(code, realmId);
+      const tokenData = JSON.parse(tokenDataJson);
+
+      // Store tokens on prospect
+      await prisma.healthScoreProspect.update({
+        where: { id: stateData.prospectId },
+        data: {
+          realmId,
+          accessToken: encryption.encrypt(tokenData.accessToken),
+          refreshToken: encryption.encrypt(tokenData.refreshToken),
+          tokenExpiresAt: new Date(Date.now() + tokenData.expiresIn * 1000),
+          status: 'CONNECTED',
+        },
+      });
+
+      // Kick off async processing (imported lazily to avoid circular deps)
+      const { healthScoreOrchestrator } = await import('../services/healthScore/healthScoreOrchestrator');
+      healthScoreOrchestrator.processProspect(stateData.prospectId).catch(err =>
+        console.error('[HS Callback] Processing failed:', err)
+      );
+
+      // Redirect to frontend processing page
+      res.redirect(`${process.env.FRONTEND_URL}/health-score/processing?id=${stateData.prospectId}`);
+    } else {
+      // --- Existing Org Flow (unchanged) ---
+      const organizationId = await quickbooksAuthService.handleCallback(code, state, realmId);
+      const redirectUrl = `${process.env.FRONTEND_URL}/settings/integrations/quickbooks/success?organizationId=${organizationId}`;
+      console.log('Redirecting to:', redirectUrl);
+      res.redirect(redirectUrl);
+    }
   } catch (error) {
     console.error('Error handling QuickBooks callback:', error);
-    // Redirect to frontend with error
     res.redirect(`${process.env.FRONTEND_URL}/settings/integrations/quickbooks/error`);
   }
 });

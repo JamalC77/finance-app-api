@@ -31,6 +31,7 @@ import subscriptionRoutes from './routes/subscriptionRoutes';
 import aiCfoRoutes from './routes/aiCfoRoutes';
 import assemblyRoutes from './routes/assemblyRoutes';
 import cfoosRoutes from './routes/cfoosRoutes';
+import healthScoreRoutes from './routes/healthScoreRoutes';
 
 // Create Express app
 const app = express();
@@ -98,6 +99,9 @@ app.use('/api/public/chat', publicChatRoutes);
 
 // Prospect intelligence pages (personalized landing pages)
 app.use('/api/public/prospect', prospectRoutes);
+
+// Health Score (public, no auth - lead gen funnel)
+app.use('/api/public/health-score', healthScoreRoutes);
 
 // Assembly engine (public demo - dynamic dashboard generation)
 app.use('/api/assembly', assemblyRoutes);

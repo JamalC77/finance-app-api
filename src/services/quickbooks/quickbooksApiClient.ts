@@ -280,6 +280,83 @@ export class QuickbooksApiClient {
     }
   }
 
+  // ==========================================
+  // Token-based methods (for Health Score / prospect flow)
+  // These bypass organizationId-based token lookup
+  // ==========================================
+
+  /**
+   * Create an axios instance using a raw access token + realmId.
+   * Used by the health score flow where tokens are stored on HealthScoreProspect,
+   * not on QuickbooksConnection.
+   */
+  private createTokenBasedInstance(accessToken: string, realmId: string): AxiosInstance {
+    const instance = axios.create({
+      baseURL: `${this.baseUrl}/company/${realmId}`,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+    });
+
+    instance.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        if (error.response?.status === 429) {
+          throw new ApiError(429, 'QuickBooks API rate limit exceeded');
+        }
+        throw error;
+      }
+    );
+
+    return instance;
+  }
+
+  /**
+   * Fetch a report using a raw access token (no organizationId lookup).
+   */
+  async getReportWithToken(
+    accessToken: string,
+    realmId: string,
+    reportType: string,
+    params: Record<string, string> = {}
+  ): Promise<any> {
+    try {
+      const api = this.createTokenBasedInstance(accessToken, realmId);
+      let endpoint = `/reports/${reportType}`;
+      if (Object.keys(params).length > 0) {
+        const queryParams = new URLSearchParams();
+        Object.entries(params).forEach(([key, value]) => queryParams.append(key, value));
+        endpoint += `?${queryParams.toString()}`;
+      }
+      console.log(`[HS QB] Fetching report: ${reportType}`);
+      const response = await api.get(endpoint);
+      return response.data;
+    } catch (error) {
+      this.handleApiError(error, 'REPORT', reportType);
+    }
+  }
+
+  /**
+   * Execute a query using a raw access token (no organizationId lookup).
+   */
+  async queryWithToken(
+    accessToken: string,
+    realmId: string,
+    query: string
+  ): Promise<any> {
+    try {
+      const api = this.createTokenBasedInstance(accessToken, realmId);
+      const encodedQuery = encodeURIComponent(query);
+      console.log(`[HS QB] Executing query: ${query.substring(0, 80)}...`);
+      const response = await api.get(`/query?query=${encodedQuery}`);
+      return response.data;
+    } catch (error) {
+      this.handleApiError(error, 'QUERY', query.substring(0, 40));
+    }
+  }
+
   /**
    * Standard error handler for API requests
    *

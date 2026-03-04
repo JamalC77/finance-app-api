@@ -740,3 +740,64 @@ model ProspectPageView {
   @@index([createdAt])
   @@map("prospect_page_views")
 }
+
+// ==========================================
+// Financial Health Score Models
+// ==========================================
+
+model HealthScoreProspect {
+  id              String            @id @default(cuid())
+  email           String
+  companyName     String?
+  industry        String?
+  realmId         String?
+  accessToken     String?           // Encrypted (AES-256-CBC)
+  refreshToken    String?           // Encrypted
+  tokenExpiresAt  DateTime?
+  status          HealthScoreStatus @default(PENDING)
+  errorMessage    String?
+  source          String?           // utm_source
+  utmCampaign     String?
+  utmMedium       String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  scores          HealthScore[]
+
+  @@index([email])
+  @@index([realmId])
+  @@map("health_score_prospects")
+}
+
+model HealthScore {
+  id                 String              @id @default(cuid())
+  prospectId         String
+  prospect           HealthScoreProspect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  compositeScore     Float
+  letterGrade        String
+  runwayLabel        String
+  liquidityScore     Float
+  receivablesScore   Float
+  revenueTrendScore  Float
+  profitabilityScore Float
+  cashRunwayScore    Float
+  metricsSnapshot    Json
+  summary            String?             @db.Text
+  cashProjection     Json?
+  emailSentAt        DateTime?
+  emailId            String?
+  createdAt          DateTime            @default(now())
+
+  @@index([prospectId])
+  @@map("health_scores")
+}
+
+enum HealthScoreStatus {
+  PENDING
+  CONNECTED
+  PULLING_DATA
+  CALCULATING
+  GENERATING_SUMMARY
+  SENDING_EMAIL
+  COMPLETED
+  FAILED
+}
